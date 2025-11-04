@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { View, TouchableOpacity } from 'react-native';
 import { Avatar, IconButton, Menu } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../supabaseClient';
@@ -20,11 +20,22 @@ export default function HeaderAvatarMenu() {
 
   const onPreferences = () => {
     closeMenu();
-    navigation.navigate('Preferences');
+    // Priority navigation to Preferences under Me tab, maintaining bottom navigation bar
+    const names = navigation.getState()?.routeNames || [];
+    if (names.includes('MainTabs')) {
+      navigation.navigate('Me', { screen: 'Preferences' });
+    } else {
+      navigation.navigate('Preferences');
+    }
   };
   const onAccount = () => {
     closeMenu();
-    navigation.navigate('Account');
+    const names = navigation.getState()?.routeNames || [];
+    if (names.includes('MainTabs')) {
+      navigation.navigate('Me', { screen: 'Account' });
+    } else {
+      navigation.navigate('Account');
+    }
   };
   const onLogout = async () => {
     closeMenu();
@@ -37,7 +48,11 @@ export default function HeaderAvatarMenu() {
       <Menu
         visible={visible}
         onDismiss={closeMenu}
-        anchor={<IconButton icon="account-circle" onPress={openMenu} />}
+        anchor={
+          <TouchableOpacity onPress={openMenu} accessibilityRole="button">
+            <Avatar.Image size={36} source={require('../../assets/icon.png')} />
+          </TouchableOpacity>
+        }
       >
         <Menu.Item onPress={onPreferences} title="Preferences" />
         <Menu.Item onPress={onAccount} title={email ? `Account (${email})` : 'Account'} />

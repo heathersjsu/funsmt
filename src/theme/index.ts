@@ -2,19 +2,61 @@ import { MD3LightTheme as DefaultTheme, MD3LightTheme } from 'react-native-paper
 import { supabase } from '../supabaseClient';
 
 export function buildKidTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+  // Figma-inspired calmer palette (Chill Calendar style)
   const colors = {
     ...DefaultTheme.colors,
-    primary: '#FF8C42',
-    secondary: '#6C63FF',
-    tertiary: '#06D6A0',
-    background: '#FFF9E6',
+    primary: '#6C63FF', // calm purple
+    secondary: '#7BC6FF', // soft blue accent
+    tertiary: '#06D6A0', // green for success/positive
+    background: '#F7F7FB', // light neutral background
     surface: '#FFFFFF',
-    error: '#FF4D6D',
+    error: '#EF476F',
     ...overrides,
   };
   return {
     ...DefaultTheme,
-    roundness: overrides?.roundness ?? 18,
+    roundness: overrides?.roundness ?? 16,
+    colors,
+  } as MD3LightTheme;
+}
+
+// Food Delivery style palette: warm brand, sunny accent, clean surfaces
+export function buildFoodTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+  const colors = {
+    ...DefaultTheme.colors,
+    primary: '#FF4C29', // vibrant coral/orange brand
+    secondary: '#FFC107', // golden accent (CTA/highlight)
+    tertiary: '#4CD964', // success green
+    background: '#FFF8F2', // warm soft background
+    surface: '#FFFFFF',
+    error: '#E53935',
+    ...overrides,
+  };
+  return {
+    ...DefaultTheme,
+    roundness: overrides?.roundness ?? 16,
+    colors,
+  } as MD3LightTheme;
+}
+
+// Cartoon/Kid-friendly playful theme: aligned with ToyListScreen palette
+export function buildCartoonTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+  const colors = {
+    ...DefaultTheme.colors,
+    primary: '#FF8C42', // playful orange (buttons, highlights)
+    secondary: '#6C63FF', // friendly purple (chips, accents)
+    tertiary: '#00C2FF', // bright sky blue (links, info)
+    background: '#FFF9E6', // soft creamy background
+    surface: '#FFFFFF',
+    error: '#FF6B6B', // lively red for errors
+    // Improve MD3 container accents used by Chips and Tonal buttons
+    secondaryContainer: '#FFE7D1',
+    // Allow overrides from Figma or env to take precedence
+    ...overrides,
+  };
+  return {
+    ...DefaultTheme,
+    roundness: overrides?.roundness ?? 16, // rounded corners consistent with ToyListScreen
     colors,
   } as MD3LightTheme;
 }
@@ -66,6 +108,7 @@ export async function loadFigmaThemeOverrides(): Promise<Partial<MD3LightTheme['
     else if (name.includes('background')) overrides.background = val as any;
     else if (name.includes('surface')) overrides.surface = val as any;
     else if (name.includes('error')) overrides.error = val as any;
+    else if (name.includes('secondarycontainer')) overrides.secondaryContainer = val as any;
   }
 
   return overrides;

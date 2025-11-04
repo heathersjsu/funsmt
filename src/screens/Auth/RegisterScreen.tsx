@@ -29,7 +29,8 @@ export default function RegisterScreen({ navigation }: Props) {
         // Prompt the user to complete verification via email
         navigation.replace('Login');
       } else {
-        navigation.replace('Home');
+        // Rely on global auth state change to switch to MainTabs
+        // Avoid replace('Home') to prevent nested navigator errors on native
       }
     }
   };

@@ -1,55 +1,62 @@
-import React from 'react';
-import { View, StyleSheet } from 'react-native';
-import { Card, Text, Button, Avatar } from 'react-native-paper';
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, ScrollView, Animated, Pressable, Platform } from 'react-native';
+import { Card, Text, useTheme } from 'react-native-paper';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { supabase } from '../../supabaseClient';
+import StatsScreen from '../Stats/StatsScreen';
+import { LinearGradient } from 'expo-linear-gradient';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { cartoonGradient } from '../../theme/tokens';
+import { BouncyIconButton } from '../../components/BouncyIconButton';
 
 type Props = NativeStackScreenProps<any>;
 
 export default function HomeScreen({ navigation }: Props) {
+  const theme = useTheme();
+  const [userName, setUserName] = useState<string>('');
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      const user = data.user;
+      const name = (user?.user_metadata?.full_name as string) || (user?.email as string) || '';
+      setUserName(name);
+    });
+  }, []);
+
+
+
   return (
-    <View style={styles.container}>
-      <Text variant="headlineLarge" style={styles.title}>Welcome back! 🎉</Text>
-      <Text style={styles.subtitle}>Pick a feature to manage toys</Text>
+    <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
+      <ScrollView style={[styles.container]} contentContainerStyle={styles.content}>
+        {/* Quick buttons removed: bottom tab navigation is sufficient */}
 
-      <View style={styles.grid}>
-        <Card style={[styles.card, { backgroundColor: '#FFE2C6' }]}>
-          <Card.Title title="Toy Check-In" subtitle="Add and register toys" left={(props) => <Avatar.Icon {...props} icon="download" style={{ backgroundColor: '#FF8C42' }} />} />
-          <Card.Actions>
-            <Button mode="contained" onPress={() => navigation.navigate('ToyCheckIn')}>Check In</Button>
-          </Card.Actions>
+        {/* Welcome back banner card in English */}
+        <Card style={[styles.bannerCard, { backgroundColor: theme.colors.primaryContainer }]}> 
+          <Card.Content>
+            <Text style={[styles.bannerTitle, { color: theme.colors.onPrimaryContainer }]}>Welcome back, {userName || 'Friend'} 👋</Text>
+            <Text style={[styles.bannerSubtitle, { color: theme.colors.onPrimaryContainer }]}>Let's tidy up toys together! 🌈⭐️</Text>
+          </Card.Content>
         </Card>
 
-        <Card style={[styles.card, { backgroundColor: '#D5E5FF' }]}>
-          <Card.Title title="Toy List" subtitle="Browse and edit toys" left={(props) => <Avatar.Icon {...props} icon="view-list" style={{ backgroundColor: '#6C63FF' }} />} />
-          <Card.Actions>
-            <Button mode="contained" onPress={() => navigation.navigate('ToyList')}>Open List</Button>
-          </Card.Actions>
-        </Card>
+        {/* Bottom tab navigation contains the bell icon; top-right icon remains in header as before */}
 
-        <Card style={[styles.card, { backgroundColor: '#CFF6E8' }]}>
-          <Card.Title title="Statistics" subtitle="Total / In / Out / By Category" left={(props) => <Avatar.Icon {...props} icon="chart-bar" style={{ backgroundColor: '#06D6A0' }} />} />
-          <Card.Actions>
-            <Button mode="contained" onPress={() => navigation.navigate('Stats')}>View Stats</Button>
-          </Card.Actions>
-        </Card>
-
-        <Card style={[styles.card, { backgroundColor: '#FFE5EC' }]}>
-          <Card.Title title="Reminders" subtitle="Push tokens and reminder settings" left={(props) => <Avatar.Icon {...props} icon="bell" style={{ backgroundColor: '#FF4D6D' }} />} />
-          <Card.Actions>
-            <Button mode="contained" onPress={() => navigation.navigate('ReminderStatus')}>Open Reminders</Button>
-          </Card.Actions>
-        </Card>
-
-        {/* Design Sync entry removed */}
-      </View>
-    </View>
+        {/* Home page displays complete statistical charts and analysis */}
+        <View style={{ marginTop: 8 }}>
+          <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+            <Card.Content>
+              <StatsScreen />
+            </Card.Content>
+          </Card>
+        </View>
+      </ScrollView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: '#FFF9E6' },
-  title: { marginBottom: 4, color: '#FF8C42' },
-  subtitle: { marginBottom: 16, color: '#3D405B' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  card: { width: '48%', marginBottom: 12, borderRadius: 18 },
+  container: { flex: 1, padding: 16 },
+  content: { paddingBottom: 24 },
+  card: { width: '100%', borderRadius: 20, marginBottom: 12 },
+  bannerCard: { borderRadius: 20, marginBottom: 12 },
+  bannerTitle: { fontSize: 24, fontWeight: '700', fontFamily: Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' }) },
+  bannerSubtitle: { fontSize: 18, marginTop: 4, fontFamily: Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif', default: 'System' }) },
 });

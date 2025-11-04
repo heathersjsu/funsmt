@@ -15,30 +15,68 @@ async function ensureBucket(): Promise<void> {
   }
 }
 
-function base64ToUint8Array(base64: string): Uint8Array {
-  const binaryString = globalThis.atob ? globalThis.atob(base64) : Buffer.from(base64, 'base64').toString('binary');
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
-  return bytes;
-}
-
 export async function uploadToyPhoto(localUri: string, userId: string): Promise<string> {
   await ensureBucket();
-  const ext = localUri.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
-  const path = `${userId}/${Date.now()}.${ext}`;
+  const isPng = localUri.toLowerCase().endsWith('.png');
+  const ext = isPng ? 'png' : 'jpg';
+  const filename = `${Date.now()}.${ext}`;
+  const contentType = isPng ? 'image/png' : 'image/jpeg';
 
-  // Try reading as base64 then convert
-  const base64 = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
-  const bytes = base64ToUint8Array(base64);
-  const { error } = await supabase.storage.from(BUCKET).upload(path, bytes, {
-    contentType: ext === 'png' ? 'image/png' : 'image/jpeg',
-    upsert: true,
+  let base64: string | undefined;
+  try {
+    base64 = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+  } catch (e) {
+    // Fallback: copy to cache and retry (helps with content:// URIs on Android and iOS ph://)
+    try {
+      const cachePath = `${FileSystem.cacheDirectory}${filename}`;
+      await FileSystem.copyAsync({ from: localUri, to: cachePath });
+      base64 = await FileSystem.readAsStringAsync(cachePath, { encoding: FileSystem.EncodingType.Base64 });
+    } catch (e2) {
+      throw new Error(`Failed to read image as base64: ${String((e2 as any)?.message || e2)}`);
+    }
+  }
+  if (!base64) throw new Error('Failed to read image as base64');
+  const dataUrl = `data:${contentType};base64,${base64}`;
+
+  const { data, error } = await supabase.functions.invoke('upload-toy-photo', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { filename, base64, dataUrl, contentType, userId },
   });
   if (error) throw error;
+  return (data as any)?.publicUrl;
+}
 
-  const { data } = await supabase.storage.from(BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+export async function uploadBase64Photo(base64: string, userId: string, contentType: string = 'image/jpeg', filename?: string): Promise<string> {
+  await ensureBucket();
+  const ext = contentType.includes('png') ? 'png' : 'jpg';
+  const name = filename || `${Date.now()}.${ext}`;
+  const dataUrl = `data:${contentType};base64,${base64}`;
+  const { data, error } = await supabase.functions.invoke('upload-toy-photo', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { filename: name, base64, dataUrl, contentType, userId },
+  });
+  if (error) throw error;
+  return (data as any)?.publicUrl;
+}
+
+export async function uploadToyPhotoWeb(blob: Blob, userId: string): Promise<string> {
+  await ensureBucket();
+  const ext = blob.type.includes('png') ? 'png' : 'jpg';
+  const filename = `${Date.now()}.${ext}`;
+  const contentType = blob.type || (ext === 'png' ? 'image/png' : 'image/jpeg');
+
+  const ab = await blob.arrayBuffer();
+  const bytes = new Uint8Array(ab);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+
+  const { data, error } = await supabase.functions.invoke('upload-toy-photo', {
+    headers: { 'Content-Type': 'application/json' },
+    body: { filename, base64, contentType, dataUrl: `data:${contentType};base64,${base64}`, userId },
+  });
+  if (error) throw error;
+  return (data as any)?.publicUrl;
 }
 
 export { BUCKET };

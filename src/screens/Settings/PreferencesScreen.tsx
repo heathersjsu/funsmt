@@ -14,7 +14,7 @@ export default function PreferencesScreen() {
     if (!isNaN(r)) setTheme(buildKidTheme({ roundness: r } as any));
   };
 
-  // Figma 相关操作移除：网站不显示或暴露任何 Figma 控件。
+  // Figma-related operations removed: website does not display or expose any Figma controls.
 
   return (
     <View style={styles.container}>
@@ -28,7 +28,7 @@ export default function PreferencesScreen() {
         </Card.Content>
       </Card>
 
-      {/* 已按要求移除 Figma 主题覆盖的按钮与展示 */}
+      {/* Figma theme override buttons and display removed as requested */}
     </View>
   );
 }

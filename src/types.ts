@@ -22,3 +22,31 @@ export interface DeviceToken {
   token: string;
   created_at: string;
 }
+
+export interface Device {
+  id?: string;
+  device_id: string;
+  user_id?: string | null;
+  name: string | null;
+  location: string | null;
+  wifi_ssid: string | null;
+  wifi_signal: number | null;
+  status: 'online' | 'offline' | string;
+  last_seen: string | null;
+  config?: any;
+  inserted_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface Reader {
+  id: string
+  name: string
+  location?: string | null
+  device_id: string
+  is_online: boolean
+  last_seen_at?: string | null
+  created_at?: string
+  config?: Record<string, unknown>
+  org_id?: string | null
+  user_id?: string | null
+}

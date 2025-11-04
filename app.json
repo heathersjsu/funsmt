@@ -2,20 +2,32 @@
   "expo": {
     "name": "pinme",
     "slug": "pinme",
-    "version": "1.0.0",
+    "version": "10.18.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "用于扫描二维码以进行设备配网与配置。",
+        "NSMicrophoneUsageDescription": "用于语音指令识别以执行快捷操作。"
+      }
     },
     "android": {
+      "package": "com.pinme.app",
+      "versionCode": 101801,
+      "permissions": [
+        "CAMERA",
+        "INTERNET",
+        "NFC",
+        "RECORD_AUDIO"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -27,7 +39,33 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "kotlinVersion": "2.0.21"
+          }
+        }
+      ],
+      "expo-camera",
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "Allow reading NFC tags for RFID features"
+        }
+      ],
+      "./plugins/withAndroidManifestFix"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "bcc95b6f-9d98-434b-9b1a-39a19ceb4364"
+      },
+      "displayVersion": "V10.18.01"
+    },
+    "owner": "heatherzhu"
   }
 }
