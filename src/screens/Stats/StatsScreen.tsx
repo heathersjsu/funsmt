@@ -8,23 +8,49 @@ import { Toy } from '../../types';
 import Svg, { Circle, G, Text as SvgText } from 'react-native-svg';
 import TagCard from '../../components/TagCard';
 import { cartoonGradient } from '../../theme/tokens';
-// const appJson = require('../../../app.json'); // Version no longer displayed
 
-type Props = NativeStackScreenProps<any>;
+type Props = NativeStackScreenProps<any> & { embedded?: boolean; refreshSignal?: number };
 
-export default function StatsScreen({}: Props) {
+export default function StatsScreen({ embedded = false, refreshSignal }: Props) {
   const [toys, setToys] = useState<Toy[]>([]);
-  // const appVersion = (appJson?.expo?.extra?.displayVersion) || (appJson?.expo?.version) || 'dev';
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const theme = useTheme();
 
   const fetchData = async () => {
-    const { data } = await supabase.from('toys').select('id,name,status,category,owner,location,updated_at');
-    setToys((data as any[]) || []);
+    const { data, error } = await supabase
+      .from('toys')
+      .select('id,name,status,category,owner,location,updated_at');
+    if (error) {
+      setErrorMsg(error.message);
+      setToys([]);
+    } else {
+      setErrorMsg(null);
+      setToys((data as any[]) || []);
+    }
   };
 
   useEffect(() => {
-    fetchData();
+    // 首次加载时仅在有会话时抓取数据，避免未登录时返回空数据
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) fetchData();
+    });
+    // 登录态变化时重新抓取
+    const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
+      if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
+        fetchData();
+      } else if (evt === 'SIGNED_OUT') {
+        setToys([]);
+      }
+    });
+    return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
   }, []);
+
+  // Re-fetch when parent triggers a refresh
+  useEffect(() => {
+    if (refreshSignal !== undefined) {
+      fetchData();
+    }
+  }, [refreshSignal]);
 
   const total = toys.length;
   const inCount = useMemo(() => toys.filter(t => t.status === 'in').length, [toys]);
@@ -90,30 +116,62 @@ export default function StatsScreen({}: Props) {
     return buckets;
   }, [toys]);
 
-  return (
-    <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
+  // When embedded in other screens (e.g., Home), remove big card backgrounds/elevation
+  const cardStyle = {
+    surface: embedded
+      ? { backgroundColor: theme.colors.surface, elevation: 0, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }
+      : { backgroundColor: theme.colors.surface, borderRadius: 24, elevation: 6 },
+    secondary: embedded
+      ? { backgroundColor: theme.colors.surface, elevation: 0, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }
+      : { backgroundColor: theme.colors.secondaryContainer, borderRadius: 24, elevation: 6 },
+    tertiary: embedded
+      ? { backgroundColor: theme.colors.surface, elevation: 0, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }
+      : { backgroundColor: theme.colors.tertiaryContainer, borderRadius: 24, elevation: 6 },
+  } as const;
+  const contentPadding = embedded ? { padding: 12 } : { padding: 20 };
+
+  const titleStyle = { textAlign: 'center', fontWeight: 'bold', color: '#FF6B9D' } as const;
+
+  const content = (
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.onSurface }]}>
-          Live Dashboard 🎮
-        </Text>
+        {errorMsg && (
+          <Card style={[styles.fullCard, { backgroundColor: theme.colors.errorContainer }]}> 
+            <Card.Content>
+              <Text style={{ color: theme.colors.onErrorContainer, fontWeight: '600' }}>Failed to load data: {errorMsg}</Text>
+            </Card.Content>
+          </Card>
+        )}
 
         {/* Statistics card grid - more cartoon-like style */}
         <View style={styles.grid}>
-          <TagCard variant="total" value={total} />
-          <TagCard variant="in" value={inCount} />
-          <TagCard variant="out" value={outCount} />
-          <TagCard variant="owners" value={ownersCount} />
+          {(
+            embedded
+              ? ['in', 'out']
+              : ['total', 'in', 'out', 'owners']
+          ).map((variant) => {
+            const valueMap: Record<string, number> = {
+              total: total,
+              in: inCount,
+              out: outCount,
+              owners: ownersCount,
+            };
+            return (
+              <TagCard key={variant} variant={variant as any} value={valueMap[variant]} flat={false} format={embedded ? 'toylist' : 'cartoon'} />
+            );
+          })}
         </View>
 
         {/* Donut chart - fix data calculation */}
-        <Card style={[styles.fullCard, { backgroundColor: theme.colors.surface, borderRadius: 24, elevation: 8 }]}>
-          <Card.Content style={{ alignItems: 'center', padding: 24 }}>
-            <Text variant="titleLarge" style={{ marginBottom: 16, fontWeight: 'bold' }}>
+        <Card style={[styles.fullCard, cardStyle.surface]}>
+          <Card.Content style={{ alignItems: 'center', padding: embedded ? 0 : 24 }}>
+            <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
               Toy Owner Distribution 👥
             </Text>
             <Svg width={220} height={220}>
-              {/* Background circle to avoid visual gaps */}
-              <Circle cx={110} cy={110} r={100} stroke={theme.colors.surfaceVariant} strokeWidth={20} fill="none" />
+              {/* Background circle disabled in embedded mode to avoid grey band */}
+              {!embedded && (
+                <Circle cx={110} cy={110} r={100} stroke={theme.colors.surfaceVariant} strokeWidth={20} fill="none" />
+              )}
               <G rotation={-90} originX={110} originY={110}>
                 {ownerEntries.map(([own, count], idx) => {
                   const radius = 100;
@@ -156,17 +214,19 @@ export default function StatsScreen({}: Props) {
         </Card.Content>
       </Card>
 
+      {/* App Version section removed per request */}
+
       {/* Statistics by category */}
-      <Card style={[styles.fullCard, { backgroundColor: theme.colors.secondaryContainer, borderRadius: 24, elevation: 6 }]}>
-        <Card.Content style={{ padding: 20 }}>
-          <Text variant="titleLarge" style={{ marginBottom: 16, fontWeight: 'bold' }}>
+      <Card style={[styles.fullCard, cardStyle.secondary]}>
+        <Card.Content style={contentPadding}>
+          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
             Top 3 Popular Categories 🏆
           </Text>
           {sortedCategories.slice(0, 3).map(([cat, count], idx) => {
             const colors = ['#FF6B9D', '#4ECDC4', '#45B7D1'];
             const medals = ['🥇', '🥈', '🥉'];
             return (
-              <View key={cat} style={[styles.rowBetween, { marginBottom: 12, padding: 12, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 16 }]}>
+              <View key={cat} style={[styles.rowBetween, { marginBottom: 12, padding: 12, backgroundColor: 'transparent', borderRadius: 16 }]}>
                 <View style={styles.rowCenter}>
                   <Text style={{ fontSize: 20, marginRight: 8 }}>{medals[idx]}</Text>
                   <Text variant="bodyLarge" style={{ fontWeight: '600' }}>{cat}</Text>
@@ -181,13 +241,13 @@ export default function StatsScreen({}: Props) {
       </Card>
 
       {/* Statistics by location */}
-      <Card style={[styles.fullCard, { backgroundColor: theme.colors.tertiaryContainer, borderRadius: 24, elevation: 6 }]}>
-        <Card.Content style={{ padding: 20 }}>
-          <Text variant="titleLarge" style={{ marginBottom: 16, fontWeight: 'bold' }}>
+      <Card style={[styles.fullCard, cardStyle.tertiary]}>
+        <Card.Content style={contentPadding}>
+          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
             Location Distribution 📍
           </Text>
           {Object.entries(byLocation).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(([loc, count]) => (
-            <View key={loc} style={[styles.rowBetween, { marginBottom: 12, padding: 12, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 16 }]}>
+            <View key={loc} style={[styles.rowBetween, { marginBottom: 12, padding: 12, backgroundColor: 'transparent', borderRadius: 16 }]}>
               <Text variant="bodyLarge" style={{ fontWeight: '600' }}>📍 {loc}</Text>
               <View style={[styles.badge, { backgroundColor: '#96CEB4' }]}>
                 <Text variant="labelMedium" style={{ color: 'white', fontWeight: 'bold' }}>{count}</Text>
@@ -198,9 +258,9 @@ export default function StatsScreen({}: Props) {
       </Card>
 
       {/* Bar Chart */}
-      <Card style={[styles.fullCard, { backgroundColor: theme.colors.surface, borderRadius: 24, elevation: 6 }]}>
-        <Card.Content style={{ padding: 20 }}>
-          <Text variant="titleLarge" style={{ marginBottom: 16, fontWeight: 'bold' }}>
+      <Card style={[styles.fullCard, cardStyle.surface]}>
+        <Card.Content style={contentPadding}>
+          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
             Last 7 Days Activity 📊
           </Text>
           <View style={styles.rowCenter}>
@@ -221,9 +281,9 @@ export default function StatsScreen({}: Props) {
       </Card>
 
       {/* Progress Bars */}
-      <Card style={[styles.fullCard, { backgroundColor: theme.colors.surface, borderRadius: 24, elevation: 6 }]}>
-        <Card.Content style={{ padding: 20 }}>
-          <Text variant="titleLarge" style={{ marginBottom: 16, fontWeight: 'bold' }}>
+      <Card style={[styles.fullCard, cardStyle.surface]}>
+        <Card.Content style={contentPadding}>
+          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
             Category Progress 🎯
           </Text>
           {topCategories.map((cat) => {
@@ -245,20 +305,23 @@ export default function StatsScreen({}: Props) {
       </Card>
 
       {/* Time Distribution */}
-      <Card style={[styles.fullCard, { backgroundColor: theme.colors.surface, borderRadius: 24, elevation: 6 }]}>
-        <Card.Content style={{ padding: 20 }}>
-          <Text variant="titleLarge" style={{ marginBottom: 16, fontWeight: 'bold' }}>
+      <Card style={[styles.fullCard, cardStyle.surface]}>
+        <Card.Content style={contentPadding}>
+          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
             Time Distribution ⏰
           </Text>
-          <View style={styles.rowCenter}>
+          <View style={[styles.rowCenter, { alignItems: 'flex-end', minHeight: 100 }]}> 
             {hourBuckets.map((count, idx) => {
               const labels = ['🌅Morning', '🌞AM', '☀️Noon', '🌤️PM', '🌆Evening', '🌙Night'];
               const maxCount = Math.max(...hourBuckets, 1);
-              const height = Math.max(8, (count / maxCount) * 60);
+              const maxBarHeight = 60;
+              const height = Math.max(8, (count / maxCount) * maxBarHeight);
               const colors = ['#FFEAA7', '#FF6B9D', '#4ECDC4', '#45B7D1', '#96CEB4', '#DDA0DD'];
               return (
-                <View key={idx} style={{ alignItems: 'center', flex: 1, marginHorizontal: 2 }}>
-                  <View style={[styles.barAlt, { height, backgroundColor: colors[idx], borderRadius: 8 }]} />
+                <View key={idx} style={{ flex: 1, marginHorizontal: 2 }}>
+                  <View style={{ height: maxBarHeight, justifyContent: 'flex-end', alignItems: 'center' }}>
+                    <View style={[styles.barAlt, { height, backgroundColor: colors[idx], borderRadius: 8 }]} />
+                  </View>
                   <Text variant="labelSmall" style={{ marginTop: 4, textAlign: 'center', fontWeight: '600' }}>
                     {labels[idx]}
                   </Text>
@@ -270,6 +333,17 @@ export default function StatsScreen({}: Props) {
       </Card>
 
       </ScrollView>
+    );
+
+  if (embedded) {
+    return (
+      <View style={{ flex: 1 }}>{content}</View>
+    );
+  }
+
+  return (
+    <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
+      {content}
     </LinearGradient>
   );
 }

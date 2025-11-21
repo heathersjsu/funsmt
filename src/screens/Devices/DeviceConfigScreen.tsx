@@ -295,13 +295,43 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
     }
   };
 
+  const onSaveDevice = async () => {
+    setError(null); setMessage(null);
+    try {
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) { setError(userErr.message); return; }
+      const uid = userRes?.user?.id;
+      if (!uid) { setError('Not signed in'); return; }
+      const up = {
+        device_id: deviceId,
+        name: deviceName,
+        location,
+        wifi_ssid: ssid || null,
+        user_id: uid,
+        updated_at: new Date().toISOString(),
+      };
+      const { error: upErr } = await supabase.from('devices').upsert(up, { onConflict: 'device_id' });
+      if (upErr) setError(upErr.message);
+      else {
+        setMessage('Saved');
+        try { if ((navigation as any)?.canGoBack?.()) navigation.goBack(); } catch {}
+      }
+    } catch (e:any) {
+      setError(e?.message || 'Save failed');
+    }
+  };
+
+  const onCancel = () => {
+    try { if ((navigation as any)?.canGoBack?.()) navigation.goBack(); } catch {}
+  };
+
   return (
     <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={{ paddingBottom: 24 }}>
       <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.primary }]}>
         Device Configuration
       </Text>
       
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Content>
           <Text variant="titleMedium" style={{ marginBottom: 8, color: theme.colors.onSurface }}>
             Device Info
@@ -338,7 +368,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
     
       {/* Your Devices section removed per request */}
     
-      <Card style={styles.card}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Title title="Network Settings" />
         <Card.Content>
           <TextInput label="WiFi SSID" value={ssid} onChangeText={setSsid} style={styles.input} />
@@ -356,7 +386,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
         </Card.Content>
       </Card>
     
-      <Card style={styles.card}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Title title="Actions" />
         <Card.Content>
           <View style={styles.row}>
@@ -407,6 +437,16 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
           </View>
         </View>
       )}
+
+      {/* Footer: Cancel / Save */}
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
+        <Card.Content>
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+            <Button mode="text" onPress={onCancel} style={{ marginRight: 8 }}>Cancel</Button>
+            <Button mode="contained" onPress={onSaveDevice}>Save</Button>
+          </View>
+        </Card.Content>
+      </Card>
     </ScrollView>
   );
 }

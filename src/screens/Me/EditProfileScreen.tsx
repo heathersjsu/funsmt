@@ -5,7 +5,7 @@ import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { uploadToyPhoto, uploadToyPhotoWeb, uploadBase64Photo } from '../../utils/storage';
+import { uploadToyPhotoBestEffort, uploadToyPhotoWebBestEffort, uploadBase64PhotoBestEffort } from '../../utils/storage';
 
 type Props = NativeStackScreenProps<any>;
 
@@ -29,6 +29,7 @@ export default function EditProfileScreen({ navigation }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
   const [avatarContentType, setAvatarContentType] = useState<string | null>(null);
+  const [originalAssetUri, setOriginalAssetUri] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -55,20 +56,23 @@ export default function EditProfileScreen({ navigation }: Props) {
       if (Platform.OS !== 'web') {
         const ct = (asset as any)?.mimeType || (asset.uri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg');
         const isHeic = ct?.includes('heic') || ct?.includes('heif') || asset.uri.toLowerCase().endsWith('.heic') || asset.uri.toLowerCase().endsWith('.heif');
-        if (isHeic) {
-          // Convert HEIC/HEIF to JPEG to ensure edge function and storage compatibility
+        try {
+          // 对所有原生平台图片进行压缩和转码，头像尺寸更小更快
           const manipulated = await ImageManipulator.manipulateAsync(
             asset.uri,
-            [],
-            { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+            [{ resize: { width: 1024 } }],
+            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
           );
+          setOriginalAssetUri(asset.uri);
           setAvatarUrl(manipulated.uri);
           setAvatarBase64(manipulated.base64 || null);
           setAvatarContentType('image/jpeg');
-        } else {
+        } catch (e) {
+          // 如果处理失败，则回退到原始资源（并尽量保持类型信息）
+          setOriginalAssetUri(asset.uri);
           setAvatarUrl(asset.uri);
           setAvatarBase64((asset as any)?.base64 || null);
-          setAvatarContentType(ct || 'image/jpeg');
+          setAvatarContentType(isHeic ? 'image/jpeg' : (ct || 'image/jpeg'));
         }
       } else {
         // Web: keep object URL/data URL behavior
@@ -100,20 +104,61 @@ export default function EditProfileScreen({ navigation }: Props) {
         throw new Error('Not logged in or session expired');
       }
       if (Platform.OS !== 'web' && avatarBase64) {
-        // Native: upload base64 directly to edge function (avoids FileSystem copyAsync)
-        finalAvatarUrl = await uploadBase64Photo(avatarBase64, uid, avatarContentType || 'image/jpeg');
+        // 并发“对冲”上传（先直传，稍后启动函数上传）
+        const tryUpload = async (b64: string, ct: string) => uploadBase64PhotoBestEffort(b64, uid, ct);
+        const ct = avatarContentType || 'image/jpeg';
+        try {
+          finalAvatarUrl = await tryUpload(avatarBase64, ct);
+        } catch (e1: any) {
+          const msg1 = String(e1?.message || e1).toLowerCase();
+          // 如果超时，自动降级尺寸与质量后重试（两次降级：720px/0.6，480px/0.5）
+          if (msg1.includes('timed out')) {
+            const baseUri = originalAssetUri || avatarUrl;
+            if (baseUri) {
+              try {
+                const m1 = await ImageManipulator.manipulateAsync(
+                  baseUri,
+                  [{ resize: { width: 720 } }],
+                  { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                );
+                setAvatarUrl(m1.uri);
+                setAvatarBase64(m1.base64 || null);
+                finalAvatarUrl = await tryUpload(m1.base64 || avatarBase64, ct);
+              } catch (e2: any) {
+                const msg2 = String(e2?.message || e2).toLowerCase();
+                if (msg2.includes('timed out')) {
+                  const m2 = await ImageManipulator.manipulateAsync(
+                    baseUri,
+                    [{ resize: { width: 480 } }],
+                    { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                  );
+                  setAvatarUrl(m2.uri);
+                  setAvatarBase64(m2.base64 || null);
+                  finalAvatarUrl = await tryUpload(m2.base64 || avatarBase64, ct);
+                } else {
+                  throw e2;
+                }
+              }
+            } else {
+              // 无法获取文件 URI，则直接重试一次原始 base64
+              finalAvatarUrl = await tryUpload(avatarBase64, ct);
+            }
+          } else {
+            throw e1;
+          }
+        }
       } else if (finalAvatarUrl && finalAvatarUrl.startsWith('file:')) {
-        // Native file path fallback: upload via helper
-        finalAvatarUrl = await uploadToyPhoto(finalAvatarUrl, uid);
+        // 原生本地文件：并发上传
+        finalAvatarUrl = await uploadToyPhotoBestEffort(finalAvatarUrl, uid);
       } else if (Platform.OS === 'web' && draggedFile) {
-        // Web drag-and-drop file: upload via edge function to avoid RLS
-        const publicUrl = await uploadToyPhotoWeb(draggedFile as Blob, uid);
+        // Web 拖拽文件：并发上传
+        const publicUrl = await uploadToyPhotoWebBestEffort(draggedFile as Blob, uid);
         finalAvatarUrl = publicUrl;
       } else if (Platform.OS === 'web' && finalAvatarUrl && (finalAvatarUrl.startsWith('blob:') || finalAvatarUrl.startsWith('data:'))) {
-        // Web picker produces blob/data URLs: fetch to Blob then upload
+        // Web 选择的 blob/data URL：先转 Blob，再并发上传
         const resp = await fetch(finalAvatarUrl);
         const blob = await resp.blob();
-        const publicUrl = await uploadToyPhotoWeb(blob, uid);
+        const publicUrl = await uploadToyPhotoWebBestEffort(blob, uid);
         finalAvatarUrl = publicUrl;
       }
       const { error } = await supabase.auth.updateUser({

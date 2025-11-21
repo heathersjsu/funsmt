@@ -1,4 +1,4 @@
-import { MD3LightTheme as DefaultTheme, MD3LightTheme } from 'react-native-paper';
+import { MD3LightTheme as DefaultTheme, MD3LightTheme, configureFonts } from 'react-native-paper';
 import { supabase } from '../supabaseClient';
 
 export function buildKidTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
@@ -41,6 +41,19 @@ export function buildFoodTheme(overrides?: Partial<MD3LightTheme['colors']> & { 
 
 // Cartoon/Kid-friendly playful theme: aligned with ToyListScreen palette
 export function buildCartoonTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+  // Unified kid-friendly fonts: Baloo 2 for titles, Nunito for body
+  const fonts = {
+    ...DefaultTheme.fonts,
+    displayLarge: { ...DefaultTheme.fonts.displayLarge, fontFamily: 'Baloo 2', fontWeight: '700' },
+    headlineLarge: { ...DefaultTheme.fonts.headlineLarge, fontFamily: 'Baloo 2', fontWeight: '700' },
+    titleLarge: { ...DefaultTheme.fonts.titleLarge, fontFamily: 'Baloo 2', fontWeight: '700' },
+    titleMedium: { ...DefaultTheme.fonts.titleMedium, fontFamily: 'Baloo 2', fontWeight: '700' },
+    titleSmall: { ...DefaultTheme.fonts.titleSmall, fontFamily: 'Baloo 2', fontWeight: '700' },
+    labelLarge: { ...DefaultTheme.fonts.labelLarge, fontFamily: 'Nunito', fontWeight: '600' },
+    bodyLarge: { ...DefaultTheme.fonts.bodyLarge, fontFamily: 'Nunito', fontWeight: '400' },
+    bodyMedium: { ...DefaultTheme.fonts.bodyMedium, fontFamily: 'Nunito', fontWeight: '400' },
+    bodySmall: { ...DefaultTheme.fonts.bodySmall, fontFamily: 'Nunito', fontWeight: '400' },
+  } as MD3LightTheme['fonts'];
   const colors = {
     ...DefaultTheme.colors,
     primary: '#FF8C42', // playful orange (buttons, highlights)
@@ -56,8 +69,9 @@ export function buildCartoonTheme(overrides?: Partial<MD3LightTheme['colors']> &
   };
   return {
     ...DefaultTheme,
-    roundness: overrides?.roundness ?? 16, // rounded corners consistent with ToyListScreen
+    roundness: overrides?.roundness ?? 20, // slightly larger roundness for capsule-like buttons
     colors,
+    fonts,
   } as MD3LightTheme;
 }
 

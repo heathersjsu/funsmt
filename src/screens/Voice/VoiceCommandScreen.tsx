@@ -124,7 +124,9 @@ export default function VoiceCommandScreen() {
           </View>
         </Card.Content>
       </Card>
-      <Snackbar visible={snackVisible} onDismiss={() => setSnackVisible(false)} duration={1600}>{snackMsg}</Snackbar>
+      <Snackbar visible={snackVisible} onDismiss={() => setSnackVisible(false)} duration={1600}>
+        <Text>{snackMsg}</Text>
+      </Snackbar>
     </View>
   );
 }

@@ -1,55 +1,39 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Text, Card, Button, List, Divider, TextInput, useTheme, IconButton } from 'react-native-paper';
-import { Camera } from 'expo-camera';
+import { View, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import { Text, Card, List, Divider, useTheme, IconButton } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { Reader } from '../../types';
-import { listReaders, createReader, deleteReader, updateReader, formatAgo } from '../../utils/readers';
-import { subscribeReaderEvents, type ReaderEvent } from '../../utils/readerEvents';
+import type { Device } from '../../types';
+import { formatAgo } from '../../utils/readers';
 import { cartoonGradient } from '../../theme/tokens';
 
 type Props = NativeStackScreenProps<any>;
-type Device = {
-  id?: string;
+
+// Supabase devices table columns reference:
+// device_id, user_id, name, location, status, wifi_signal, last_seen, config, wifi_ssid, wifi_password, created_at
+type SupabaseDevice = {
   device_id: string;
-  name?: string;
-  location?: string;
-  wifi_signal?: number | null;
-  status?: 'online' | 'offline' | string;
-  last_seen?: string | null;
-};
-
-const formatDeviceAgo = (iso?: string | null) => {
-  if (!iso) return '-';
-  const dt = new Date(iso);
-  const diff = Math.floor((Date.now() - dt.getTime()) / 60000);
-  if (diff < 1) return 'just now';
-  if (diff < 60) return `${diff} min ago`;
-  const h = Math.floor(diff/60);
-  return `${h} h ago`;
-};
-
-const signalBars = (signal?: number | null) => {
-  if (signal == null) return '     ';
-  const bars = Math.round(Math.min(100, Math.max(0, signal)) / 20);
-  return '█'.repeat(bars) + ' '.repeat(5 - bars);
+  user_id?: string | null;
+  name?: string | null;
+  location?: string | null;
+  status?: string | null; // e.g., 'online' | 'offline'
+  wifi_signal?: number | null; // RSSI or percentage
+  last_seen?: string | null; // ISO timestamp
+  config?: any | null;
+  wifi_ssid?: string | null;
+  wifi_password?: string | null;
+  created_at?: string | null;
 };
 
 export default function DeviceManagementScreen({ navigation }: Props) {
   const theme = useTheme();
-  const [devices, setDevices] = useState<Device[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Readers state
-  const [readers, setReaders] = useState<Reader[]>([]);
-  const [creating, setCreating] = useState(false);
-  const [rName, setRName] = useState('');
-  const [rLocation, setRLocation] = useState('');
-  const [rDeviceId, setRDeviceId] = useState('');
+  // Devices state
+  const [devices, setDevices] = useState<SupabaseDevice[]>([]);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   // Tick to recompute online/offline every minute
   const [tick, setTick] = useState(0);
@@ -58,158 +42,97 @@ export default function DeviceManagementScreen({ navigation }: Props) {
     return () => clearInterval(id);
   }, []);
 
-  // Latest events map: device_id -> text
-  const [latestEvents, setLatestEvents] = useState<Record<string, string>>({});
-  useEffect(() => {
-    const stop = subscribeReaderEvents((evt: ReaderEvent) => {
-      const text = evt.event_type === 'rfid_read'
-        ? `RFID: ${evt.payload?.tag_id || ''}`
-        : evt.event_type === 'heartbeat'
-          ? `HB ${evt.payload?.rssi ?? ''}`
-          : evt.event_type;
-      setLatestEvents(prev => ({ ...prev, [evt.device_id]: text }));
-    });
-    return () => { try { stop(); } catch {} };
-  }, []);
+  // No reader events here; devices list is from Supabase 'devices' table
 
-  // fetchDevices removed: using readers only
-
-  const fetchReaders = async () => {
-    const { data, error } = await listReaders();
-    if (error) setError(error);
-    else setReaders(data || []);
+  const fetchDevices = async () => {
+    const { data, error } = await supabase.from('devices').select('*').order('created_at', { ascending: false });
+    if (error) setError(error.message);
+    else setDevices((data || []) as SupabaseDevice[]);
   };
 
-  useEffect(() => { fetchReaders(); }, []);
+  useEffect(() => { fetchDevices(); }, []);
 
-  // Realtime: subscribe readers changes only
+  // Realtime: subscribe devices table changes
   useEffect(() => {
-    const readersCh = supabase
-      .channel('readers-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'readers' }, (payload: any) => {
-        setReaders(prev => {
-          const r = (payload.new || payload.old) as any;
-          if (!r?.device_id) return prev;
+    const ch = supabase
+      .channel('devices-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'devices' }, (payload: any) => {
+        setDevices(prev => {
+          const d = (payload.new || payload.old) as SupabaseDevice;
+          if (!d?.device_id) return prev;
           if (payload.eventType === 'DELETE') {
-            return prev.filter(x => x.device_id !== r.device_id);
+            return prev.filter(x => x.device_id !== d.device_id);
           }
-          const idx = prev.findIndex(x => x.device_id === r.device_id);
+          const idx = prev.findIndex(x => x.device_id === d.device_id);
           if (idx >= 0) {
             const next = [...prev];
-            next[idx] = { ...next[idx], ...(payload.new as Reader) };
+            next[idx] = { ...next[idx], ...(payload.new as SupabaseDevice) };
             return next;
           }
-          return [(payload.new as Reader), ...prev];
+          return [(payload.new as SupabaseDevice), ...prev];
         });
       })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(readersCh);
+      supabase.removeChannel(ch);
     };
   }, []);
 
-  // removed devices online/offline computations; using readers lists below
+  // Online status rule: ONLY last_seen within 5 minutes (ignore 'status' column)
+  const ONLINE_TTL_MS = 5 * 60 * 1000;
+  const now = Date.now();
+  const onlineDevices = useMemo(() => devices.filter(d => {
+    const ts = d.last_seen ? new Date(d.last_seen).getTime() : 0;
+    const recent = ts > 0 && (now - ts) < ONLINE_TTL_MS;
+    return recent;
+  }), [devices, now, tick]);
+  const offlineDevices = useMemo(() => devices.filter(d => {
+    const ts = d.last_seen ? new Date(d.last_seen).getTime() : 0;
+    const recent = ts > 0 && (now - ts) < ONLINE_TTL_MS;
+    return !recent;
+  }), [devices, now, tick]);
 
-  // Online status rule: authoritative by readers.is_online only (no last_seen fallback)
-  const onlineReaders = useMemo(() => readers.filter(r => !!(r as any).is_online), [readers]);
-  const offlineReaders = useMemo(() => readers.filter(r => !(r as any).is_online), [readers]);
-  const onReconfigure = (d: Device) => {
+  const onReconfigure = (d: SupabaseDevice) => {
     navigation.navigate('DeviceConfig', { preset: d });
   };
 
-  const onRestart = async (d: Device) => {
-    setError(null); setMessage(null);
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id;
-    const { error } = await supabase.from('device_commands').insert({ device_id: d.device_id, user_id: uid, command: 'reboot', payload: {} });
-    if (error) setError(error.message);
-    else setMessage(`Restart command queued for ${d.device_id}`);
+  // Optional: delete device (not requested, so hidden from UI)
+  const deleteDevice = async (deviceId: string) => {
+    const { error } = await supabase.from('devices').delete().eq('device_id', deviceId);
+    if (error) setError(error.message); else { setMessage('Device deleted'); fetchDevices(); }
   };
 
-  // removed device logs feature per request
-
-  const [scanOpen, setScanOpen] = useState(false);
-  const [hasCamPermission, setHasCamPermission] = useState<boolean | null>(null);
-
-  const openScanner = async () => {
-    setError(null); setMessage(null);
+  const onRefresh = async () => {
     try {
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      if (status === 'granted') {
-        setHasCamPermission(true);
-        setScanOpen(true);
-      } else {
-        setHasCamPermission(false);
-        setError('Camera permission denied');
-      }
-    } catch (e: any) {
-      setError(e?.message || 'Failed to request camera permission');
-    }
-  };
-
-  const onScanned = ({ data }: { data: string }) => {
-    if (!data) return;
-    setRDeviceId(data);
-    setScanOpen(false);
-    setMessage('Device ID scanned');
-  };
-
-  const handleCreateReader = async () => {
-    if (!rName || !rDeviceId) {
-      setError('Name and Device ID are required');
-      return;
-    }
-    const { error } = await createReader({
-      device_id: rDeviceId,
-      name: rName,
-      location: rLocation,
-    });
-    if (error) {
-      setError(error);
-    } else {
-      setMessage('Reader created successfully');
-      setRName('');
-      setRLocation('');
-      setRDeviceId('');
-      setCreating(false);
-      fetchReaders();
-    }
-  };
-
-  const handleDeleteReader = async (deviceId: string) => {
-    const { error } = await deleteReader(deviceId);
-    if (error) {
-      setError(error);
-    } else {
-      setMessage('Reader deleted successfully');
-      fetchReaders();
+      setRefreshing(true);
+      await fetchDevices();
+    } finally {
+      setRefreshing(false);
     }
   };
 
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={styles.content}>
-        <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.primary }]}> 
-          Device Management
-        </Text>
+      <ScrollView
+        style={[styles.container, { backgroundColor: 'transparent' }]}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        {/* Title removed per request; restore readers list with online/offline sections */}
 
-        {/* Readers Section */}
-        <Card style={[styles.cardSection, { backgroundColor: theme.colors.surface }]}> 
-          {/* Removed header title and Add button per request */}
+        {/* Devices Section with online/offline grouping, aligned with Supabase 'devices' table */}
+        <Card style={[styles.cardSection, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
           <Card.Content>
-            {false && <View />}
-
-            {/* Online Section */}
             <List.Subheader style={{ color: theme.colors.onSurface }}>Online</List.Subheader>
-            {onlineReaders.length === 0 ? (
+            {onlineDevices.length === 0 ? (
               <Text style={{ color: theme.colors.onSurfaceVariant }}>No online devices</Text>
             ) : (
-              onlineReaders.map((reader, idx) => (
-                <View key={`on-${reader.device_id}`}>
+              onlineDevices.map((device, idx) => (
+                <View key={`on-${device.device_id}`}>
                   <List.Item
-                    title={reader.name || reader.device_id}
-                    description={`${reader.location || 'Unknown'} • online • ${formatAgo(reader.last_seen_at)}`}
+                    title={device.name || device.device_id}
+                    description={`${device.location || 'Unknown'} • last seen ${formatAgo(device.last_seen || undefined)}${device.wifi_ssid ? ` • SSID: ${device.wifi_ssid}` : ''}${typeof device.wifi_signal === 'number' ? ` • Signal: ${device.wifi_signal}` : ''}`}
                     titleStyle={{ color: theme.colors.onSurface }}
                     descriptionStyle={{ color: theme.colors.onSurfaceVariant }}
                     titleNumberOfLines={2}
@@ -219,29 +142,26 @@ export default function DeviceManagementScreen({ navigation }: Props) {
                     )}
                     right={(props) => (
                       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', columnGap: 0, marginRight: -12 }}>
-                        <IconButton icon="information-outline" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceDetail', { device_id: reader.device_id })} />
-                        <IconButton icon="pencil" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceConfig', { preset: { device_id: reader.device_id, name: reader.name, location: reader.location } })} />
-                        <IconButton icon="delete-outline" size={20} style={{ marginHorizontal: -6 }} iconColor={theme.colors.error} onPress={() => handleDeleteReader(reader.device_id)} />
+                        <IconButton icon="information-outline" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceDetail', { device_id: device.device_id })} />
+                        <IconButton icon="pencil" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceConfig', { preset: device })} />
+                        <IconButton icon="delete-outline" size={20} style={{ marginHorizontal: -6 }} iconColor={theme.colors.error} onPress={() => deleteDevice(device.device_id)} />
                       </View>
                     )}
                   />
-                  {idx < onlineReaders.length - 1 && <Divider />}
+                  {idx < onlineDevices.length - 1 && <Divider />}
                 </View>
               ))
             )}
-          
             <Divider style={styles.divider} />
-          
-            {/* Offline Section */}
             <List.Subheader style={{ color: theme.colors.onSurface }}>Offline</List.Subheader>
-            {offlineReaders.length === 0 ? (
+            {offlineDevices.length === 0 ? (
               <Text style={{ color: theme.colors.onSurfaceVariant }}>No offline devices</Text>
             ) : (
-              offlineReaders.map((reader, idx) => (
-                <View key={`off-${reader.device_id}`}>
+              offlineDevices.map((device, idx) => (
+                <View key={`off-${device.device_id}`}>
                   <List.Item
-                    title={reader.name || reader.device_id}
-                    description={`${reader.location || 'Unknown'} • offline • ${formatAgo(reader.last_seen_at)}`}
+                    title={device.name || device.device_id}
+                    description={`${device.location || 'Unknown'} • last seen ${formatAgo(device.last_seen || undefined)}${device.wifi_ssid ? ` • SSID: ${device.wifi_ssid}` : ''}${typeof device.wifi_signal === 'number' ? ` • Signal: ${device.wifi_signal}` : ''}`}
                     titleStyle={{ color: theme.colors.onSurface }}
                     descriptionStyle={{ color: theme.colors.onSurfaceVariant }}
                     titleNumberOfLines={2}
@@ -251,13 +171,13 @@ export default function DeviceManagementScreen({ navigation }: Props) {
                     )}
                     right={(props) => (
                       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', columnGap: 0, marginRight: -12 }}>
-                        <IconButton icon="information-outline" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceDetail', { device_id: reader.device_id })} />
-                        <IconButton icon="pencil" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceConfig', { preset: { device_id: reader.device_id, name: reader.name, location: reader.location } })} />
-                        <IconButton icon="delete-outline" size={20} style={{ marginHorizontal: -6 }} iconColor={theme.colors.error} onPress={() => handleDeleteReader(reader.device_id)} />
+                        <IconButton icon="information-outline" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceDetail', { device_id: device.device_id })} />
+                        <IconButton icon="pencil" size={20} style={{ marginHorizontal: -6 }} onPress={() => navigation.navigate('DeviceConfig', { preset: device })} />
+                        <IconButton icon="delete-outline" size={20} style={{ marginHorizontal: -6 }} iconColor={theme.colors.error} onPress={() => deleteDevice(device.device_id)} />
                       </View>
                     )}
                   />
-                  {idx < offlineReaders.length - 1 && <Divider />}
+                  {idx < offlineDevices.length - 1 && <Divider />}
                 </View>
               ))
             )}
@@ -266,14 +186,14 @@ export default function DeviceManagementScreen({ navigation }: Props) {
 
         {/* Error/Message Display */}
         {error && (
-          <Card style={[styles.cardSection, { backgroundColor: theme.colors.errorContainer }]}> 
+          <Card style={[styles.cardSection, { backgroundColor: theme.colors.errorContainer, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
             <Card.Content>
               <Text style={{ color: theme.colors.onErrorContainer }}>{error}</Text>
             </Card.Content>
           </Card>
         )}
         {message && (
-          <Card style={[styles.cardSection, { backgroundColor: theme.colors.primaryContainer }]}> 
+          <Card style={[styles.cardSection, { backgroundColor: theme.colors.primaryContainer, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
             <Card.Content>
               <Text style={{ color: theme.colors.onPrimaryContainer }}>{message}</Text>
             </Card.Content>

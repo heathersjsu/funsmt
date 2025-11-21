@@ -4,7 +4,7 @@ import { Text, TextInput, Button, HelperText, Menu, useTheme } from 'react-nativ
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { uploadToyPhoto, uploadToyPhotoWeb, BUCKET } from '../../utils/storage';
+import { uploadToyPhotoWebBestEffort, uploadBase64PhotoBestEffort, uploadToyPhotoBestEffort, BUCKET } from '../../utils/storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
 
@@ -34,6 +34,8 @@ export default function ToyCheckInScreen({ navigation }: Props) {
   const [name, setName] = useState('');
   const [rfid, setRfid] = useState('');
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
+  const [photoContentType, setPhotoContentType] = useState<string>('image/jpeg');
   const [category, setCategory] = useState('');
   const [source, setSource] = useState('');
   const [location, setLocation] = useState('');
@@ -59,20 +61,30 @@ export default function ToyCheckInScreen({ navigation }: Props) {
   const pickImage = async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      base64: true,
+      quality: 0.9,
+    });
     if (!result.canceled) {
       const asset = result.assets[0];
       setPhotoUrl(asset.uri);
+      setPhotoBase64(asset.base64 || null);
+      const isPng = (asset.uri || '').toLowerCase().endsWith('.png');
+      setPhotoContentType(isPng ? 'image/png' : 'image/jpeg');
     }
   };
 
   const takePhoto = async () => {
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
     if (!granted) return;
-    const result = await ImagePicker.launchCameraAsync({});
+    const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.9 });
     if (!result.canceled) {
       const asset = result.assets[0];
       setPhotoUrl(asset.uri);
+      setPhotoBase64(asset.base64 || null);
+      const isPng = (asset.uri || '').toLowerCase().endsWith('.png');
+      setPhotoContentType(isPng ? 'image/png' : 'image/jpeg');
     }
   };
 
@@ -119,13 +131,19 @@ export default function ToyCheckInScreen({ navigation }: Props) {
       user_id: uid,
     };
     try {
-      if (photoUrl && photoUrl.startsWith('file:')) {
-        const publicUrl = await uploadToyPhoto(photoUrl, uid);
+      if (photoBase64) {
+        // Best-effort base64 upload (native)
+        const publicUrl = await uploadBase64PhotoBestEffort(photoBase64, uid, photoContentType);
+        payload.photo_url = publicUrl;
+      } else if (photoUrl && photoUrl.startsWith('file:')) {
+        // Best-effort native file upload
+        const publicUrl = await uploadToyPhotoBestEffort(photoUrl, uid);
         payload.photo_url = publicUrl;
       } else if (Platform.OS === 'web' && photoUrl && (photoUrl.startsWith('blob:') || photoUrl.startsWith('data:'))) {
         const resp = await fetch(photoUrl);
         const blob = await resp.blob();
-        const publicUrl = await uploadToyPhotoWeb(blob, uid);
+        // Best-effort web Blob upload
+        const publicUrl = await uploadToyPhotoWebBestEffort(blob, uid);
         payload.photo_url = publicUrl;
       }
       const { error } = await supabase.from('toys').insert(payload);

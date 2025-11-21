@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
-import { Card, Text, Checkbox, Button, ProgressBar, useTheme, Avatar } from 'react-native-paper';
+import { Card, Text, Checkbox, Button, ProgressBar, useTheme, Avatar, HelperText } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
+import { LinearGradient } from 'expo-linear-gradient';
+import { cartoonGradient } from '../../theme/tokens';
 
 interface ChecklistItem {
   id: string;
@@ -13,6 +15,8 @@ interface ChecklistItem {
 export default function RecoveryChecklistScreen() {
   const theme = useTheme();
   const [items, setItems] = useState<ChecklistItem[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [info, setInfo] = useState('');
 
   const progress = useMemo(() => {
     const total = items.length || 1;
@@ -33,11 +37,28 @@ export default function RecoveryChecklistScreen() {
 
   const toggle = (id: string) => setItems(prev => prev.map(i => i.id === id ? { ...i, checked: !i.checked } : i));
 
+  const onSave = async () => {
+    const checked = items.filter(i => i.checked);
+    if (checked.length === 0) { setInfo('Please select toys you have tidied up first'); return; }
+    setSaving(true);
+    try {
+      for (const it of checked) {
+        await supabase.from('toys').update({ status: 'in' }).eq('id', it.id);
+      }
+      setItems(prev => prev.filter(i => !i.checked));
+      setInfo('Selected toys have been marked as in-stock');
+    } catch (e: any) {
+      setInfo('Save failed: ' + (e?.message || 'unknown error'));
+    }
+    setSaving(false);
+  };
+
   return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={{ paddingBottom: 24 }}>
+    <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
+    <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
       <Text variant="headlineMedium" style={{ marginBottom: 8 }}>Help toys go home! 🚀</Text>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}> 
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
         <Card.Content>
           <Text style={{ marginBottom: 8 }}>Completed {items.filter(i => i.checked).length}/{items.length}</Text>
           <ProgressBar progress={progress} color={theme.colors.primary} style={{ height: 8, borderRadius: 4 }} />
@@ -45,7 +66,7 @@ export default function RecoveryChecklistScreen() {
       </Card>
 
       {items.map(item => (
-        <Card key={item.id} style={[styles.card, { backgroundColor: theme.colors.surface }]}> 
+        <Card key={item.id} style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
           <Card.Content>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               {item.photo_url ? (
@@ -63,18 +84,24 @@ export default function RecoveryChecklistScreen() {
       ))}
 
       {items.length > 0 && items.every(i => i.checked) ? (
-        <Card style={[styles.card, { backgroundColor: theme.colors.primaryContainer }]}> 
+        <Card style={[styles.card, { backgroundColor: theme.colors.primaryContainer, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
           <Card.Content>
             <Text style={{ color: theme.colors.onPrimaryContainer }}>Awesome! All toys are safely home! 🎉</Text>
           </Card.Content>
         </Card>
       ) : null}
+
+      <View style={{ paddingVertical: 8 }}>
+        {info ? <HelperText type="info">{info}</HelperText> : null}
+        <Button mode="contained" onPress={onSave} disabled={saving || items.filter(i => i.checked).length === 0}>Save</Button>
+      </View>
     </ScrollView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16 },
-  card: { borderRadius: 18, marginBottom: 12 },
+  card: { marginBottom: 12 },
   checkedText: { textDecorationLine: 'line-through', color: '#888' },
 });

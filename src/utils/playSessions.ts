@@ -40,6 +40,10 @@ export async function recordScan(toyId: string, scanTimeISO: string) {
 
 // Optional: toggle toys.status based on current status, ensure initial loading also reflects status
 export async function setToyStatus(toyId: string, desiredStatus: 'in' | 'out') {
+  const { data: userRes } = await supabase.auth.getUser();
+  if (!userRes?.user?.id) {
+    throw new Error('Not logged in or session expired');
+  }
   const { error: insertErr } = await supabase
     .from('play_sessions')
     .insert({ toy_id: toyId, scan_time: new Date().toISOString() });
@@ -53,6 +57,11 @@ export async function setToyStatus(toyId: string, desiredStatus: 'in' | 'out') {
 }
 
 export async function handleRfidEvent(ev: RfidEventPayload, navigation?: any) {
+  const { data: userRes } = await supabase.auth.getUser();
+  if (!userRes?.user?.id) {
+    // No session: ignore silently or route to login
+    return;
+  }
   let toyId = ev.toy_id as string | undefined;
   if (!toyId && ev.tag_id) {
     const toy = await findOrCreateToy(ev.tag_id, navigation);

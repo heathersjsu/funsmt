@@ -16,15 +16,16 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
    const theme = useTheme();
 
 
-   useEffect(() => {
-     supabase.auth.getUser().then(({ data }) => {
-       const user = data.user;
-       setEmail(user?.email || null);
-       setUserName(user?.user_metadata?.full_name || user?.email || 'User');
-       setAvatarUrl(user?.user_metadata?.avatar_url || null);
-     });
+  useEffect(() => {
+     const applyUser = (u: any) => {
+       setEmail(u?.email || null);
+       setUserName(u?.user_metadata?.full_name || u?.email || 'User');
+       setAvatarUrl(u?.user_metadata?.avatar_url || null);
+     };
+     supabase.auth.getUser().then(({ data }) => { applyUser(data.user); });
      const fetchCounts = async () => {
-       const { data } = await supabase.from('toys').select('status');
+       const { data, error } = await supabase.from('toys').select('status');
+       if (error) { setToyCounts({ total: 0, out: 0, in: 0 }); return; }
        const arr = (data || []) as any[];
        const total = arr.length;
        const out = arr.filter(t => t.status === 'out').length;
@@ -32,7 +33,18 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
        setToyCounts({ total, out, in: inCount });
      };
      fetchCounts();
-   }, []);
+     // 订阅登录态变化，刷新用户信息与计数，解决刷新后显示为空的问题
+     const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
+       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
+         applyUser(session?.user);
+         fetchCounts();
+       } else if (evt === 'SIGNED_OUT') {
+         applyUser(null);
+         setToyCounts({ total: 0, out: 0, in: 0 });
+       }
+     });
+     return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
+  }, []);
 
    const points = useMemo(() => {
      // Simple points: 10 for each check-out, 5 for each check-in
@@ -45,14 +57,25 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
    const onManual = () => {
      navigation.navigate('Manual');
    };
-   const onLogout = async () => {
-     await supabase.auth.signOut();
-   };
+  const onLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      try {
+        // 彻底清理可能残留的会话，避免“假登录”
+        if (typeof window !== 'undefined') {
+          Object.keys(window.localStorage || {}).forEach((k) => { if (k.startsWith('sb-')) window.localStorage.removeItem(k); });
+        }
+      } catch {}
+      // 通过 URL 参数强制回到登录页
+      try { (globalThis as any).location?.assign('/?login'); } catch {}
+    }
+  };
 
    return (
      <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
        <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
-         <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}> 
+         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
            <Card.Title
              title={userName || 'Me'}
              subtitle={email || ''}
@@ -74,18 +97,54 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
            </Card.Content>
          </Card>
 
-         <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}> 
+         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
 
           <List.Item title="Help" left={() => <BouncyIconButton icon="help-circle" bg={theme.colors.primary} onPress={onHelp} size="small" />} onPress={onHelp} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
            <Divider />
 
-          <List.Item title="Manual" left={() => <BouncyIconButton icon="book" bg={theme.colors.primary} onPress={onManual} size="small" />} onPress={onManual} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
-          <List.Item title="Reminders" left={() => <BouncyIconButton icon="bell-outline" bg={theme.colors.secondary} onPress={() => navigation.navigate('Home', { screen: 'ReminderStatus' })} size="small" />} onPress={() => navigation.navigate('Home', { screen: 'ReminderStatus' })} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+         <List.Item title="Manual" left={() => <BouncyIconButton icon="book" bg={theme.colors.primary} onPress={onManual} size="small" />} onPress={onManual} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+         <List.Item title="Environment Check" left={() => <BouncyIconButton icon="wrench" bg={theme.colors.primary} onPress={() => navigation.navigate('EnvironmentCheck')} size="small" />} onPress={() => navigation.navigate('EnvironmentCheck')} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+         <List.Item
+           title="Recovery Checklist"
+           left={() => <BouncyIconButton icon="clipboard-check-outline" bg={theme.colors.primary} onPress={() => navigation.navigate('RecoveryChecklist')} size="small" />}
+           onPress={() => navigation.navigate('RecoveryChecklist')}
+           right={() => <List.Icon icon="chevron-right" />}
+           style={{ paddingLeft: 20 }}
+         />
+         <List.Item
+           title="Reminders"
+           left={() => (
+             <BouncyIconButton
+               icon="bell-outline"
+               bg={theme.colors.secondary}
+               onPress={() => {
+                 // 跨 Tab 导航：确保从 MeStack 跳转到 Home Tab 下的 ReminderStatus
+                 const parent = navigation.getParent?.();
+                 if (parent) {
+                   parent.navigate('Home', { screen: 'ReminderStatus' });
+                 } else {
+                   navigation.navigate('Home', { screen: 'ReminderStatus' });
+                 }
+               }}
+               size="small"
+             />
+           )}
+           onPress={() => {
+             const parent = navigation.getParent?.();
+             if (parent) {
+               parent.navigate('Home', { screen: 'ReminderStatus' });
+             } else {
+               navigation.navigate('Home', { screen: 'ReminderStatus' });
+             }
+           }}
+           right={() => <List.Icon icon="chevron-right" />}
+           style={{ paddingLeft: 20 }}
+         />
           
           {/* Moved reminder entries into ReminderStatusScreen per request */}
          </Card>
 
-         <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}> 
+         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
 
           <List.Item title="Sign Out" left={() => <BouncyIconButton icon="logout" bg={theme.colors.error} onPress={onLogout} size="small" />} onPress={onLogout} style={{ paddingLeft: 20 }} />
          </Card>

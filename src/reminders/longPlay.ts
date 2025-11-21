@@ -1,6 +1,6 @@
 import { supabase } from '../supabaseClient';
 import * as Notifications from 'expo-notifications';
-import { recordNotificationHistory } from '../utils/notifications';
+import { recordNotificationHistory, ensureNotificationPermissionAndChannel } from '../utils/notifications';
 
 export type LongPlaySettings = {
   enabled: boolean;
@@ -36,13 +36,14 @@ function clearTimer(toyId: string) {
 }
 
 async function notifyLongPlay(toyName: string, minutes: number) {
-  const body = `${toyName} has been played for ${minutes} minutes. Time for a gentle eye break! 👀`;
+  const body = `${toyName} has been playing for ${minutes} minutes. Please take an eye break 👀`;
   try {
+    await ensureNotificationPermissionAndChannel();
     await Notifications.scheduleNotificationAsync({
-      content: { title: 'Time for a break!', body },
+      content: { title: 'Time to take a break', body },
       trigger: null,
     });
-    await recordNotificationHistory('Time for a break!', body, 'longPlay');
+    await recordNotificationHistory('Long Play reminder', body, 'longPlay');
   } catch {}
 }
 
@@ -58,26 +59,28 @@ export async function startLongPlayMonitor(settings: LongPlaySettings) {
         const toyId = row.id as string;
         const status = row.status as 'in' | 'out';
         const toyName = row.name as string || 'Toy';
+        const updatedAt = (row.updated_at as string) || new Date().toISOString();
         if (!toyId) return;
         if (status === 'out') {
           const st = await fetchLastScanTime(toyId);
-          if (st) {
-            startTimes[toyId] = st;
-            // check every minute
-            clearTimer(toyId);
-            timers[toyId] = setInterval(async () => {
-              try {
-                const start = startTimes[toyId];
-                if (!start) return;
-                const diffMs = Date.now() - new Date(start).getTime();
-                const mins = Math.floor(Math.max(0, diffMs) / 60000);
-                if (mins >= settings.durationMin) {
-                  clearTimer(toyId);
-                  await notifyLongPlay(toyName, mins);
-                }
-              } catch {}
-            }, 60000);
-          }
+          // Use the last scan time; if missing fall back to the latest update time (status change)
+          startTimes[toyId] = st || updatedAt;
+          // Check every 30 seconds and perform an immediate check
+          clearTimer(toyId);
+          const checkAndMaybeNotify = async () => {
+            try {
+              const start = startTimes[toyId];
+              if (!start) return;
+              const diffMs = Date.now() - new Date(start).getTime();
+              const mins = Math.floor(Math.max(0, diffMs) / 60000);
+              if (mins >= settings.durationMin) {
+                clearTimer(toyId);
+                await notifyLongPlay(toyName, mins);
+              }
+            } catch {}
+          };
+          await checkAndMaybeNotify();
+          timers[toyId] = setInterval(checkAndMaybeNotify, 30000);
         } else {
           clearTimer(toyId);
         }
@@ -93,22 +96,22 @@ export async function startLongPlayMonitor(settings: LongPlaySettings) {
       (outToys || []).forEach(async (t: any) => {
         const tid = t.id as string; const tname = (t.name as string) || 'Toy';
         const st = await fetchLastScanTime(tid);
-        if (st) {
-          startTimes[tid] = st;
-          clearTimer(tid);
-          timers[tid] = setInterval(async () => {
-            try {
-              const start = startTimes[tid];
-              if (!start) return;
-              const diffMs = Date.now() - new Date(start).getTime();
-              const mins = Math.floor(Math.max(0, diffMs) / 60000);
-              if (mins >= settings.durationMin) {
-                clearTimer(tid);
-                await notifyLongPlay(tname, mins);
-              }
-            } catch {}
-          }, 60000);
-        }
+        startTimes[tid] = st || new Date().toISOString();
+        clearTimer(tid);
+        const checkAndMaybeNotify = async () => {
+          try {
+            const start = startTimes[tid];
+            if (!start) return;
+            const diffMs = Date.now() - new Date(start).getTime();
+            const mins = Math.floor(Math.max(0, diffMs) / 60000);
+            if (mins >= settings.durationMin) {
+              clearTimer(tid);
+              await notifyLongPlay(tname, mins);
+            }
+          } catch {}
+        };
+        await checkAndMaybeNotify();
+        timers[tid] = setInterval(checkAndMaybeNotify, 30000);
       });
     } catch {}
   } catch (e) {

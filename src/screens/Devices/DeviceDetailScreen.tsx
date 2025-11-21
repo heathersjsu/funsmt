@@ -89,7 +89,7 @@ export default function DeviceDetailScreen({ route }: Props) {
       <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.primary }]}>Device Details</Text>
       <Text style={{ marginBottom: 8 }}>ID: {deviceId}</Text>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Title title="Hardware Config" />
         <Card.Content>
           <TextInput label="Name" mode="outlined" value={name} onChangeText={setName} style={styles.input} />
@@ -112,7 +112,7 @@ export default function DeviceDetailScreen({ route }: Props) {
         </Card.Content>
       </Card>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Title title="Recent Events" right={() => (
           <Button compact onPress={loadEvents}>Refresh</Button>
         )} />
@@ -125,7 +125,7 @@ export default function DeviceDetailScreen({ route }: Props) {
         </Card.Content>
       </Card>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Title title="LAN Discovery (mDNS)" right={() => (
           <Button compact onPress={onDiscover} loading={discovering}>Scan</Button>
         )} />

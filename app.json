@@ -15,8 +15,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "用于扫描二维码以进行设备配网与配置。",
-        "NSMicrophoneUsageDescription": "用于语音指令识别以执行快捷操作。"
+        "NSCameraUsageDescription": "Used to scan QR codes for device provisioning and configuration.",
+        "NSMicrophoneUsageDescription": "Used for voice command recognition to perform quick actions."
       }
     },
     "android": {
@@ -39,15 +39,15 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "expo-dev-client",
       "expo-secure-store",
       [
         "expo-build-properties",
         {
           "android": {
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "buildToolsVersion": "35.0.0",
-            "kotlinVersion": "2.0.21"
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.0.0"
           }
         }
       ],
@@ -58,7 +58,9 @@
           "nfcPermission": "Allow reading NFC tags for RFID features"
         }
       ],
-      "./plugins/withAndroidManifestFix"
+      "./plugins/withAndroidManifestFix",
+      "react-native-ble-plx",
+      "react-native-wifi-reborn"
     ],
     "extra": {
       "eas": {

@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, FlatList, TouchableOpacity, ScrollView, Pressable } from 'react-native';
+import React, { useEffect, useState, useCallback } from 'react';
+import { View, StyleSheet, FlatList, TouchableOpacity, ScrollView, Pressable, RefreshControl } from 'react-native';
 import { Image } from 'expo-image';
 import { Button, Chip, Card, Text, Menu, Searchbar, Banner, useTheme, List } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
 import { Toy } from '../../types';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { calculateDuration } from '../../utils/toys';
 import { formatRfidDisplay } from '../../utils/rfid';
 import { LinearGradient } from 'expo-linear-gradient'
@@ -32,10 +33,28 @@ export default function ToyListScreen({ navigation }: Props) {
   const [lastPlayedTimes, setLastPlayedTimes] = useState<Record<string, string>>({});
   const [nowTick, setNowTick] = useState<number>(Date.now());
   const [pageError, setPageError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   useEffect(() => {
     const t = setInterval(() => setNowTick(Date.now()), 60000);
     return () => clearInterval(t);
+  }, []);
+
+  // Ensure list refreshes when login state changes (fix: native first render may have no session)
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
+      if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
+        // Re-fetch toys once the session becomes available so RLS can return user-owned rows
+        fetchToys();
+      }
+      if (evt === 'SIGNED_OUT') {
+        // Clear data on sign out
+        setToys([]);
+        setOwners([]);
+        setShowEmptyBanner(true);
+      }
+    });
+    return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
   }, []);
 
   const fetchPlayEvents = async () => {
@@ -172,6 +191,9 @@ export default function ToyListScreen({ navigation }: Props) {
           const st = row.scan_time as string | undefined;
           if (!tid) return;
           try {
+            // Ensure authenticated user for updates under RLS
+            const { data: userRes } = await supabase.auth.getUser();
+            if (!userRes?.user?.id) return;
             // Read current status and toggle
             const { data } = await supabase.from('toys').select('status').eq('id', tid).maybeSingle();
             const prev = (data as any)?.status as 'in' | 'out' | null;
@@ -263,9 +285,26 @@ export default function ToyListScreen({ navigation }: Props) {
     }
   };
 
+  const onRefresh = useCallback(async () => {
+    try {
+      setRefreshing(true);
+      await fetchToys();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [sort, categoryFilter, ownerFilter, query]);
+
   useEffect(() => {
     fetchToys();
   }, [sort, categoryFilter, ownerFilter, query]);
+
+  // Also refresh when the screen gains focus (e.g., after navigating from Login)
+  useFocusEffect(
+    useCallback(() => {
+      fetchToys();
+      return () => {};
+    }, [sort, categoryFilter, ownerFilter, query])
+  );
 
   const formatLastPlayed = (dateStr: string) => {
     if (!dateStr) return 'Never';
@@ -321,26 +360,33 @@ export default function ToyListScreen({ navigation }: Props) {
               />
             </View>
           ) : (
-            <View style={{ width: '100%', aspectRatio: 16/9, height: undefined, backgroundColor: theme.colors.secondaryContainer, borderTopLeftRadius: 14, borderTopRightRadius: 14, alignItems: 'center', justifyContent: 'center', borderBottomColor: theme.colors.surfaceVariant }}>
-              <Text style={{ color: theme.colors.secondary }}>No Photo</Text>
+            <View style={{ width: '100%', aspectRatio: 16/9, height: undefined, backgroundColor: theme.colors.secondaryContainer, borderTopLeftRadius: 14, borderTopRightRadius: 14, alignItems: 'center', justifyContent: 'center' }}>
+              {/* Default gray logo when photo is missing */}
+              <Image
+                // Use app icon and tint it to darker black‑gray
+                source={require('../../../assets/icon.png')}
+                style={{ width: '50%', height: '70%', tintColor: '#333333' }}
+                contentFit="contain"
+                cachePolicy="none"
+              />
             </View>
           )}
           <View style={[styles.statusTag, { backgroundColor: item.status === 'in' ? statusColors.online : statusColors.danger }]}>
-            <Text style={{ color: '#fff', fontSize: 12 }}>{item.status === 'in' ? 'In Place' : 'Playing'}</Text>
+            <Text style={[styles.textSmall, { color: '#fff' }]}>{item.status === 'in' ? 'In Place' : 'Playing'}</Text>
           </View>
           <Card.Content style={{ flex: 1, paddingHorizontal: 4 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text numberOfLines={1} style={{ fontWeight: '700', fontSize: 16, color: theme.colors.onSurface, flex: 1, marginRight: 8 }}>{item.name}</Text>
-              <Text numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, textAlign: 'right' }}>{item.owner || '-'}</Text>
+              <Text numberOfLines={1} style={[styles.textTitle, { color: theme.colors.onSurface, flex: 1, marginRight: 8 }]}>{item.name}</Text>
+              <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.onSurfaceVariant, textAlign: 'right' }]}>{item.owner || '-'}</Text>
             </View>
-            <Text numberOfLines={1} style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>Last Played: {getLastPlayedText(item.id)}</Text>
+            <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.onSurfaceVariant, marginTop: 2 }]}>Last Played: {getLastPlayedText(item.id)}</Text>
             <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 8, width: '100%' }}>
               <Button
                 mode="contained-tonal"
                 onPress={() => navigation.navigate('ToyForm', { toy: item })}
                 style={{ borderRadius: 10 }}
                 contentStyle={{ height: 40, width: 80, paddingHorizontal: 6, justifyContent: 'center' }}
-                labelStyle={{ fontSize: 12, marginLeft: 15,textAlign: 'center' }}
+                labelStyle={[styles.textSmall, { marginLeft: 15, textAlign: 'center' }]}
               >
                 Edit
               </Button>
@@ -349,7 +395,7 @@ export default function ToyListScreen({ navigation }: Props) {
                 onPress={() => navigation.navigate('ToyForm', { toy: item, readOnly: true, showHistory: true })}
                 style={{ marginLeft: 10, borderRadius: 10 }}
                 contentStyle={{ height: 40, width: 80, paddingHorizontal: 6, justifyContent: 'center' }}
-                labelStyle={{ fontSize: 12, marginLeft: 1,textAlign: 'center' }}
+                labelStyle={[styles.textSmall, { marginLeft: 1, textAlign: 'center' }]}
               >
                 History
               </Button>
@@ -362,14 +408,18 @@ export default function ToyListScreen({ navigation }: Props) {
 
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
+      <ScrollView
+        style={[styles.container, { backgroundColor: 'transparent' }]}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
       {pageError && (
         <Banner visible icon="alert" style={{ marginBottom: 8, backgroundColor: theme.colors.errorContainer, borderRadius: 16 }}>
-          <Text style={{ color: theme.colors.onErrorContainer, fontWeight: '600' }}>{pageError}</Text>
+          <Text style={[styles.textBody, { color: theme.colors.onErrorContainer, fontWeight: '600' }]}>{pageError}</Text>
         </Banner>
       )}
       <Banner visible={showEmptyBanner} actions={[{ label: 'Add Toy', onPress: () => navigation.navigate('ToyForm') }]} icon="emoticon-happy-outline" style={{ marginBottom: 8, backgroundColor: theme.colors.secondaryContainer, borderRadius: 16 }}>
-        No toys found. Try adjusting filters or add a new toy.
+        <Text style={styles.textBody}>No toys found. Try adjusting filters or add a new toy.</Text>
       </Banner>
       <View style={styles.filterBar}>
         <Searchbar
@@ -378,7 +428,7 @@ export default function ToyListScreen({ navigation }: Props) {
           onChangeText={setQuery}
           onSubmitEditing={fetchToys}
           style={[styles.search, { flex: 1, borderRadius: 16, backgroundColor: theme.colors.surface, height: 48, minHeight: 48, paddingVertical: 0 }]}
-          inputStyle={{ fontSize: 12, lineHeight: 16, paddingVertical: 0 }}
+          inputStyle={[styles.textSmall, { paddingVertical: 0 }]}
         />
         <Button
           mode="contained-tonal"
@@ -386,7 +436,7 @@ export default function ToyListScreen({ navigation }: Props) {
           onPress={() => setShowFilters((v) => !v)}
           style={{ marginLeft: 8, borderRadius: 16, height: 48 }}
           contentStyle={{ height: 48, paddingHorizontal: 10, justifyContent: 'center' }}
-          labelStyle={{ fontSize: 12 }}
+          labelStyle={styles.textSmall}
         >
           Filter
         </Button>
@@ -435,7 +485,7 @@ export default function ToyListScreen({ navigation }: Props) {
         <View>
           {/* Playing and In Place groups */}
           <View style={{ marginBottom: 12 }}>
-            <List.Subheader>Playing</List.Subheader>
+            <List.Subheader style={styles.subheader}>Playing</List.Subheader>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
               {toys.filter((t) => t.status === 'out').map((it) => (
                 <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
@@ -445,7 +495,7 @@ export default function ToyListScreen({ navigation }: Props) {
             </View>
           </View>
           <View style={{ marginBottom: 12 }}>
-            <List.Subheader>In Place</List.Subheader>
+            <List.Subheader style={styles.subheader}>In Place</List.Subheader>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
               {toys.filter((t) => t.status === 'in').map((it) => (
                 <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
@@ -459,7 +509,7 @@ export default function ToyListScreen({ navigation }: Props) {
         <View>
           {groupedByCategory.map(([cat, items]) => (
             <View key={cat} style={{ marginBottom: 12 }}>
-              <List.Subheader>{cat}</List.Subheader>
+              <List.Subheader style={styles.subheader}>{cat}</List.Subheader>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
                 {items.map((it) => (
                   <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
@@ -474,7 +524,7 @@ export default function ToyListScreen({ navigation }: Props) {
         <View>
           {groupedByOwner.map(([own, items]) => (
             <View key={own} style={{ marginBottom: 12 }}>
-              <List.Subheader>{own}</List.Subheader>
+              <List.Subheader style={styles.subheader}>{own}</List.Subheader>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
                 {items.map((it) => (
                   <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
@@ -489,7 +539,7 @@ export default function ToyListScreen({ navigation }: Props) {
         <View>
           {/* remove grouped views: replace conditional with unified list */}
           <View>
-            <List.Subheader>All</List.Subheader>
+            <List.Subheader style={styles.subheader}>All</List.Subheader>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
               {toys.map((it) => (
                 <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
@@ -513,4 +563,9 @@ const styles = StyleSheet.create({
   chip: { marginRight: 8, borderRadius: 20 },
   tile: { width: '100%', borderRadius: 16, overflow: 'hidden' },
   statusTag: { position: 'absolute', top: 8, left: 8, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, opacity: 0.92 },
+  // Unified typography
+  textTitle: { fontSize: 16, fontWeight: '700' },
+  textBody: { fontSize: 13, lineHeight: 18 },
+  textSmall: { fontSize: 12, lineHeight: 16 },
+  subheader: { fontSize: 14, fontWeight: '700' },
 });

@@ -41,3 +41,19 @@ yarn-error.*
 /android
 
 .vercel
+
+# Build artifacts and large bundles (do not push)
+build/
+build/**
+!build/apk_extract_release/AndroidManifest.xml
+!build/bundles/HermesDecoded/
+build/app-release.zip
+
+# Supabase local temp files
+/supabase/.temp/
+
+# Local environment variables
+.env
+
+# Local credentials (keep private)
+/credentials/
