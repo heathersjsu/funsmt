@@ -19,21 +19,30 @@
         "NSMicrophoneUsageDescription": "Used for voice command recognition to perform quick actions."
       }
     },
-    "android": {
-      "package": "com.pinme.app",
-      "versionCode": 101801,
-      "permissions": [
-        "CAMERA",
-        "INTERNET",
-        "NFC",
-        "RECORD_AUDIO"
-      ],
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+  "android": {
+    "package": "com.pinme.app",
+    "versionCode": 101801,
+    "permissions": [
+      "CAMERA",
+      "INTERNET",
+      "NFC",
+      "RECORD_AUDIO",
+      // BLE & Wi‑Fi related permissions
+      "BLUETOOTH",
+      "BLUETOOTH_ADMIN",
+      "BLUETOOTH_CONNECT",
+      "BLUETOOTH_SCAN",
+      "ACCESS_FINE_LOCATION",
+      "ACCESS_COARSE_LOCATION",
+      "NEARBY_WIFI_DEVICES",
+      "ACCESS_WIFI_STATE",
+      "CHANGE_WIFI_STATE"
+    ],
+    "adaptiveIcon": {
+      "foregroundImage": "./assets/adaptive-icon.png",
+      "backgroundColor": "#ffffff"
+    },
+      "edgeToEdgeEnabled": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -66,7 +75,9 @@
       "eas": {
         "projectId": "bcc95b6f-9d98-434b-9b1a-39a19ceb4364"
       },
-      "displayVersion": "V10.18.01"
+      "displayVersion": "V10.18.01",
+      "SUPABASE_URL": "https://kjitkkeerytijbcgkqjj.supabase.co",
+      "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqaXRra2Vlcnl0aWpiY2drcWpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MzgxMjUsImV4cCI6MjA3NjExNDEyNX0.isMJIUbp7pDTxs3RBA1-paGVvQUl-TQS6t1GcwtD1Vc"
     },
     "owner": "heatherzhu"
   }

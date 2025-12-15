@@ -86,8 +86,9 @@ export default function SmartTidyingSettingsScreen() {
 
   const openScan = async () => {
     const all = await getNotificationHistory();
-    const items = all
-      .filter((i) => (i.source || '').toLowerCase() === 'smarttidying')
+    // Show latest 20 reminders across all sources, not only smart tidy-up
+    const items = (all || [])
+      .slice()
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, 20);
     setScanItems(items);
@@ -141,7 +142,7 @@ export default function SmartTidyingSettingsScreen() {
       <Portal>
         {/* 弹窗保留小号标题 */}
         <Dialog visible={scanDialogOpen} onDismiss={closeScan} style={{ borderRadius: 16 }}>
-          <Dialog.Title style={{ fontSize: 16 }}>Recent smart tidy-up reminders</Dialog.Title>
+          <Dialog.Title style={{ fontSize: 16 }}>Recent reminders</Dialog.Title>
           <Dialog.Content style={{ paddingHorizontal: 8 }}>
             <View style={{ maxHeight: 380 }}>
               {scanItems.length === 0 ? (

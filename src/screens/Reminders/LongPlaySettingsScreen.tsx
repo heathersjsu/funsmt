@@ -2,23 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Card, Text, Switch, TextInput, Button, Checkbox, HelperText, useTheme, Dialog, Portal } from 'react-native-paper';
 import { getNotificationHistory, NotificationHistoryItem } from '../../utils/notifications';
-import * as SecureStore from 'expo-secure-store';
 import { startLongPlayMonitor, stopLongPlayMonitor, LongPlaySettings } from '../../reminders/longPlay';
+import { loadLongPlaySettings, saveLongPlaySettings } from '../../utils/reminderSettings';
 import { supabase } from '../../supabaseClient';
 
-const KEY = 'reminder_longplay_settings';
-
-async function loadSettings(): Promise<LongPlaySettings> {
-  try {
-    const raw = await SecureStore.getItemAsync(KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return { enabled: false, durationMin: 45, methods: { push: true, inApp: true } };
-}
-
-async function saveSettings(s: LongPlaySettings) {
-  try { await SecureStore.setItemAsync(KEY, JSON.stringify(s)); } catch {}
-}
+// Settings are now centrally persisted to Supabase with local fallback
 
 export default function LongPlaySettingsScreen() {
   const theme = useTheme();
@@ -33,7 +21,7 @@ export default function LongPlaySettingsScreen() {
 
   useEffect(() => {
     (async () => {
-      const s = await loadSettings();
+      const s = await loadLongPlaySettings();
       setEnabled(s.enabled);
       setDurationMin(String(s.durationMin));
       setPush(s.methods.push);
@@ -49,8 +37,16 @@ export default function LongPlaySettingsScreen() {
   const onSave = async () => {
     const n = parseInt(durationMin, 10);
     const s: LongPlaySettings = { enabled, durationMin: isNaN(n) ? 45 : n, methods: { push, inApp } };
-    await saveSettings(s);
-    setInfo('Long Play Reminder settings saved.');
+    const res = await saveLongPlaySettings(s);
+    if (!res.remoteSaved) {
+      if (res.error === 'not_logged_in') {
+        setInfo('Saved locally. Please sign in to sync to cloud.');
+      } else {
+        setInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
+      }
+    } else {
+      setInfo('Long Play Reminder settings saved to cloud.');
+    }
     stopLongPlayMonitor();
     if (s.enabled) startLongPlayMonitor(s);
   };
@@ -69,8 +65,14 @@ export default function LongPlaySettingsScreen() {
 
   const getToyNameFromBody = (body?: string): string | null => {
     if (!body) return null;
-    const idx = body.indexOf(' has been played');
-    if (idx > 0) return body.slice(0, idx).trim();
+    const prefix = 'Friendly reminder: ';
+    const s = body.startsWith(prefix) ? body.slice(prefix.length) : body;
+    // Handle messages like "Teddy has been playing for 50 minutes"
+    const markers = [' has been playing', ' has been played', ' has been'];
+    for (const m of markers) {
+      const idx = s.indexOf(m);
+      if (idx > 0) return s.slice(0, idx).trim();
+    }
     return null;
   };
 
@@ -82,7 +84,7 @@ export default function LongPlaySettingsScreen() {
     try {
       const { data: toys } = await supabase
         .from('toys')
-        .select('id,name,status')
+        .select('id,name,owner,status')
         .eq('status', 'out');
       const toyIds = (toys || []).map((t: any) => t.id);
       if (toyIds.length) {
@@ -105,8 +107,9 @@ export default function LongPlaySettingsScreen() {
             const durMs = Date.now() - start;
             if (durMs < thresholdMs) return null;
             const durMin = Math.floor(durMs / 60000);
+            const ownerLabel = t.owner ? `${t.owner}'s ` : '';
             const title = 'Long Play';
-            const body = `${t.name || 'Toy'} has been playing for ${durMin} minutes`;
+            const body = `Friendly reminder: ${ownerLabel}${t.name || 'Toy'} has been playing for ${durMin} minutes`;
             return { id: `${t.id}_${startISO}`, title, body, timestamp: Date.now(), source: 'longplay' } as NotificationHistoryItem;
           })
           .filter(Boolean) as NotificationHistoryItem[];
@@ -120,7 +123,7 @@ export default function LongPlaySettingsScreen() {
     // 2) History fallback
     const all = await getNotificationHistory();
     const historyItems = all
-      .filter((i) => (i.source || '').toLowerCase() === 'longplay')
+      .filter((i) => (i.source || '').toLowerCase().startsWith('longplay'))
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, 20);
 
@@ -174,16 +177,12 @@ export default function LongPlaySettingsScreen() {
               {scanItems.length === 0 ? (
                 <Text>No records yet. Please enable Long Play and set the duration; records will appear after actual play.</Text>
               ) : (
-                scanItems.map((it) => {
-                  const name = getToyNameFromBody(it.body || '') || 'Toy';
-                  return (
-                    <View key={it.id} style={{ marginBottom: 8 }}>
-                      <Text style={{ fontWeight: '600', fontSize: 14 }}>{name}</Text>
-                      <Text style={{ opacity: 0.7, fontSize: 12 }}>{formatTime(it.timestamp)} · {it.title}</Text>
-                      {it.body ? <Text style={{ opacity: 0.8, fontSize: 12 }}>{it.body}</Text> : null}
-                    </View>
-                  );
-                })
+                scanItems.map((it) => (
+                  <View key={it.id} style={{ marginBottom: 8 }}>
+                    {it.body ? <Text style={{ fontSize: 14 }}>{it.body}</Text> : null}
+                    <Text style={{ opacity: 0.7, fontSize: 12, marginTop: 2 }}>{formatTime(it.timestamp)} · {it.title}</Text>
+                  </View>
+                ))
               )}
             </View>
           </Dialog.Content>

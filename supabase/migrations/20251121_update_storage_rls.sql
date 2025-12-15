@@ -1,8 +1,8 @@
 -- RLS policies for toy-photos bucket to support direct signed uploads
 -- Path convention: name = '<user_id>/<filename>'
 
-do $$
-begin
+DO $rls$
+BEGIN
   -- Enable RLS on storage.objects (idempotent)
   begin
     execute 'alter table storage.objects enable row level security';
@@ -15,7 +15,7 @@ begin
     select 1 from pg_policies
     where schemaname = 'storage' and tablename = 'objects' and policyname = 'toy_photos_insert_own_folder'
   ) then
-    execute $$
+    EXECUTE $pol$
       create policy "toy_photos_insert_own_folder"
       on storage.objects
       for insert
@@ -24,7 +24,7 @@ begin
         bucket_id = 'toy-photos'
         and split_part(name, '/', 1) = auth.uid()::text
       )
-    $$;
+    $pol$;
   end if;
 
   -- SELECT: allow authenticated users to list/view objects only in their own folder via API
@@ -32,7 +32,7 @@ begin
     select 1 from pg_policies
     where schemaname = 'storage' and tablename = 'objects' and policyname = 'toy_photos_select_own_folder'
   ) then
-    execute $$
+    EXECUTE $pol$
       create policy "toy_photos_select_own_folder"
       on storage.objects
       for select
@@ -41,7 +41,7 @@ begin
         bucket_id = 'toy-photos'
         and split_part(name, '/', 1) = auth.uid()::text
       )
-    $$;
+    $pol$;
   end if;
 
   -- UPDATE: allow users to update (e.g., metadata) only their own objects
@@ -49,7 +49,7 @@ begin
     select 1 from pg_policies
     where schemaname = 'storage' and tablename = 'objects' and policyname = 'toy_photos_update_own_object'
   ) then
-    execute $$
+    EXECUTE $pol$
       create policy "toy_photos_update_own_object"
       on storage.objects
       for update
@@ -62,7 +62,7 @@ begin
         bucket_id = 'toy-photos'
         and split_part(name, '/', 1) = auth.uid()::text
       )
-    $$;
+    $pol$;
   end if;
 
   -- DELETE: allow users to delete only their own objects
@@ -70,7 +70,7 @@ begin
     select 1 from pg_policies
     where schemaname = 'storage' and tablename = 'objects' and policyname = 'toy_photos_delete_own_object'
   ) then
-    execute $$
+    EXECUTE $pol$
       create policy "toy_photos_delete_own_object"
       on storage.objects
       for delete
@@ -79,9 +79,10 @@ begin
         bucket_id = 'toy-photos'
         and split_part(name, '/', 1) = auth.uid()::text
       )
-    $$;
+    $pol$;
   end if;
-end $$;
+END
+$rls$ LANGUAGE plpgsql;
 
 -- Note:
 -- - The bucket 'toy-photos' is public (per 20251016_create_storage_bucket.sql), so files are publicly accessible via CDN URLs.

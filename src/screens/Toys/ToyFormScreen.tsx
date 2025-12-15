@@ -42,10 +42,11 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(!!route.params?.showHistory);
-  const [historySessions, setHistorySessions] = useState<{ start: string; minutes: number }[]>([]);
+  const [historySessions, setHistorySessions] = useState<{ start: string; minutes?: number; end?: string | null; durationMin?: number | null }[]>([]);
   // Keep base64 for native upload when asset URI is not readable (content://, ph://)
   const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [photoContentType, setPhotoContentType] = useState<string>('image/jpeg');
+  const [originalAssetUri, setOriginalAssetUri] = useState<string | null>(null);
   
   // Accordion panels
   const [basicOpen, setBasicOpen] = useState(true);
@@ -84,10 +85,13 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const pickImage = async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return;
+    // 动态兼容 expo-image-picker 新旧 API
+    const hasNew = !!(ImagePicker as any).MediaType && typeof (ImagePicker as any).MediaType.image !== 'undefined';
+    const mediaTypesParam: any = hasNew ? (ImagePicker as any).MediaType.image : (ImagePicker as any).MediaTypeOptions.Images;
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: mediaTypesParam,
       base64: true,
-      quality: 0.9,
+      quality: 0.8,
     });
     if (!result.canceled) {
       const asset = result.assets[0];
@@ -99,9 +103,10 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         try {
           const manipulated = await ImageManipulator.manipulateAsync(
             asset.uri,
-            [{ resize: { width: 1200 } }], // cap width to ~1200px to keep upload small and fast
-            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+            [{ resize: { width: 1024 } }], // 更小的上限，减少体积
+            { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true }
           );
+          setOriginalAssetUri(asset.uri);
           finalUri = manipulated.uri || asset.uri;
           finalBase64 = manipulated.base64 || asset.base64 || null;
           finalContentType = 'image/jpeg';
@@ -148,7 +153,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         return;
       }
       // Native platforms: use NFC when available (Dev Client / production build)
-      const supportsNativeNfc = Platform.OS !== 'web' && (Constants.appOwnership !== 'expo');
+      const supportsNativeNfc = (Platform.OS as any) !== 'web' && (Constants.appOwnership !== 'expo');
       if (!supportsNativeNfc) {
         setError('Running in Expo Go; NFC scanning is unavailable. Please use Expo Dev Client or a production build.');
         return;
@@ -221,15 +226,97 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           const uid = userRes?.user?.id;
           if (!uid) throw new Error('Not logged in');
           // Best-effort: try direct signed upload first, hedge to Edge Function if slow
-          const publicUrl = await uploadBase64PhotoBestEffort(photoBase64, uid, photoContentType);
-          payload.photo_url = publicUrl;
+          const tryUpload = async (b64: string, ct: string) => uploadBase64PhotoBestEffort(b64, uid, ct);
+          const ct = photoContentType || 'image/jpeg';
+          try {
+            const publicUrl = await tryUpload(photoBase64, ct);
+            payload.photo_url = publicUrl;
+          } catch (e1: any) {
+            const msg1 = String(e1?.message || e1).toLowerCase();
+            if (msg1.includes('timed out')) {
+              const baseUri = originalAssetUri || photoUrl || '';
+              if (baseUri) {
+                try {
+                  const m1 = await ImageManipulator.manipulateAsync(
+                    baseUri,
+                    [{ resize: { width: 720 } }],
+                    { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                  );
+                  setPhotoUrl(m1.uri);
+                  setPhotoBase64(m1.base64 || null);
+                  const publicUrl = await tryUpload(m1.base64 || photoBase64, ct);
+                  payload.photo_url = publicUrl;
+                } catch (e2: any) {
+                  const msg2 = String(e2?.message || e2).toLowerCase();
+                  if (msg2.includes('timed out')) {
+                    const m2 = await ImageManipulator.manipulateAsync(
+                      baseUri,
+                      [{ resize: { width: 480 } }],
+                      { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                    );
+                    setPhotoUrl(m2.uri);
+                    setPhotoBase64(m2.base64 || null);
+                    const publicUrl = await tryUpload(m2.base64 || photoBase64, ct);
+                    payload.photo_url = publicUrl;
+                  } else {
+                    throw e2;
+                  }
+                }
+              } else {
+                // 无法获取文件 URI，则直接重试一次原始 base64
+                const publicUrl = await tryUpload(photoBase64, ct);
+                payload.photo_url = publicUrl;
+              }
+            } else {
+              throw e1;
+            }
+          }
         } else if (photoUrl && photoUrl.startsWith('file:')) {
           const { data: userRes } = await supabase.auth.getUser();
           const uid = userRes?.user?.id;
           if (!uid) throw new Error('Not logged in');
-          // Best-effort native file upload
-          const publicUrl = await uploadToyPhotoBestEffort(photoUrl, uid);
-          payload.photo_url = publicUrl;
+          // 对本地文件进行压缩后再上传（避免大图导致超时）
+          let localUri = photoUrl;
+          try {
+            const m0 = await ImageManipulator.manipulateAsync(
+              photoUrl,
+              [{ resize: { width: 1024 } }],
+              { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+            );
+            localUri = m0.uri || photoUrl;
+          } catch {}
+          try {
+            const publicUrl = await uploadToyPhotoBestEffort(localUri, uid);
+            payload.photo_url = publicUrl;
+          } catch (e1: any) {
+            const msg1 = String(e1?.message || e1).toLowerCase();
+            if (msg1.includes('timed out')) {
+              try {
+                const m1 = await ImageManipulator.manipulateAsync(
+                  localUri,
+                  [{ resize: { width: 720 } }],
+                  { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG }
+                );
+                const publicUrl = await uploadToyPhotoBestEffort(m1.uri || localUri, uid);
+                payload.photo_url = publicUrl;
+              } catch (e2: any) {
+                const msg2 = String(e2?.message || e2).toLowerCase();
+                if (msg2.includes('timed out')) {
+                  const m2 = await ImageManipulator.manipulateAsync(
+                    localUri,
+                    [{ resize: { width: 480 } }],
+                    { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG }
+                  );
+                  const publicUrl = await uploadToyPhotoBestEffort(m2.uri || localUri, uid);
+                  payload.photo_url = publicUrl;
+                } else {
+                  throw e2;
+                }
+              }
+            } else {
+              throw e1;
+            }
+          }
         } else if (Platform.OS === 'web' && draggedFile) {
           const { data: userRes } = await supabase.auth.getUser();
           const uid = userRes?.user?.id;

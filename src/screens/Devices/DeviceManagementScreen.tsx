@@ -35,12 +35,8 @@ export default function DeviceManagementScreen({ navigation }: Props) {
   const [devices, setDevices] = useState<SupabaseDevice[]>([]);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  // Tick to recompute online/offline every minute
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 60000);
-    return () => clearInterval(id);
-  }, []);
+  // Realtime 已订阅 devices 表，状态实时更新；无需按 5 分钟阈值轮询
+  // 如需定期刷新，可保留轻量 tick，但本实现改为直接依据 Supabase devices.status 字段
 
   // No reader events here; devices list is from Supabase 'devices' table
 
@@ -79,19 +75,9 @@ export default function DeviceManagementScreen({ navigation }: Props) {
     };
   }, []);
 
-  // Online status rule: ONLY last_seen within 5 minutes (ignore 'status' column)
-  const ONLINE_TTL_MS = 5 * 60 * 1000;
-  const now = Date.now();
-  const onlineDevices = useMemo(() => devices.filter(d => {
-    const ts = d.last_seen ? new Date(d.last_seen).getTime() : 0;
-    const recent = ts > 0 && (now - ts) < ONLINE_TTL_MS;
-    return recent;
-  }), [devices, now, tick]);
-  const offlineDevices = useMemo(() => devices.filter(d => {
-    const ts = d.last_seen ? new Date(d.last_seen).getTime() : 0;
-    const recent = ts > 0 && (now - ts) < ONLINE_TTL_MS;
-    return !recent;
-  }), [devices, now, tick]);
+  // Online/Offline 显示规则：与 Supabase devices.status 字段保持一致
+  const onlineDevices = useMemo(() => devices.filter(d => String(d.status || '').toLowerCase() === 'online'), [devices]);
+  const offlineDevices = useMemo(() => devices.filter(d => String(d.status || '').toLowerCase() !== 'online'), [devices]);
 
   const onReconfigure = (d: SupabaseDevice) => {
     navigation.navigate('DeviceConfig', { preset: d });

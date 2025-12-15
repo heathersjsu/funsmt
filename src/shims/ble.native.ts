@@ -6,6 +6,8 @@
 
 type Listener = { remove: () => void };
 
+import { Platform } from 'react-native';
+
 export class BleManager {
   private _real: any | null = null;
 
@@ -68,5 +70,21 @@ export class BleManager {
     if (this._real?.cancelDeviceConnection) return this._real.cancelDeviceConnection(id);
     // No-op when not available
     return;
+  }
+
+  // Expose cancelTransaction to allow safely terminating monitor subscriptions with a known transactionId
+  cancelTransaction(transactionId: string) {
+    try {
+      // Workaround: On Android (particularly RN New Architecture), calling cancelTransaction can crash
+      // with PromiseImpl.reject NPE when native code passes a null error code.
+      // To avoid this, make cancelTransaction a no-op on Android.
+      if (Platform.OS === 'android') return;
+      if (this._real?.cancelTransaction && transactionId) {
+        return this._real.cancelTransaction(transactionId);
+      }
+    } catch (e) {
+      // swallow to avoid crashing callers; some react-native-ble-plx versions may throw
+      console.warn(`BLE cancelTransaction failed: ${(e as any)?.message || e}`);
+    }
   }
 }

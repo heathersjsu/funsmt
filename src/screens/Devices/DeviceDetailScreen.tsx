@@ -14,6 +14,7 @@ export default function DeviceDetailScreen({ route }: Props) {
   const deviceId: string = route?.params?.device_id;
   const theme = useTheme();
   const [reader, setReader] = useState<Reader | null>(null);
+  const [deviceRow, setDeviceRow] = useState<any | null>(null);
   const [events, setEvents] = useState<ReaderEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,13 +51,23 @@ export default function DeviceDetailScreen({ route }: Props) {
     setLoading(false);
   };
 
+  const loadDeviceRow = async () => {
+    const { data, error } = await supabase
+      .from('devices')
+      .select('status,last_seen,wifi_signal,wifi_ssid,fw_version,uptime_s,free_heap')
+      .eq('device_id', deviceId)
+      .maybeSingle();
+    if (error) setError(error.message);
+    setDeviceRow(data || null);
+  };
+
   const loadEvents = async () => {
     const { data, error } = await listReaderEvents(deviceId, 50);
     if (error) setError(error);
     setEvents(data);
   };
 
-  useEffect(() => { loadReader(); loadEvents(); }, [deviceId]);
+  useEffect(() => { loadReader(); loadEvents(); loadDeviceRow(); }, [deviceId]);
 
   const saveConfig = async () => {
     setError(null); setMessage(null);
@@ -88,6 +99,27 @@ export default function DeviceDetailScreen({ route }: Props) {
     <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }] }>
       <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.primary }]}>Device Details</Text>
       <Text style={{ marginBottom: 8 }}>ID: {deviceId}</Text>
+
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}> 
+        <Card.Title title="Device Status" right={() => (
+          <Button compact onPress={loadDeviceRow}>Refresh</Button>
+        )} />
+        <Card.Content>
+          {!deviceRow ? (
+            <Text>No device row</Text>
+          ) : (
+            <View style={{ gap: 6 }}>
+              <Text>Status: {deviceRow.status || '-'}</Text>
+              <Text>Last seen: {deviceRow.last_seen ? new Date(deviceRow.last_seen).toLocaleString() : '-'}</Text>
+              <Text>Wi‑Fi: {deviceRow.wifi_ssid || '-'} · RSSI={typeof deviceRow.wifi_signal==='number'? deviceRow.wifi_signal : '-'}</Text>
+              <Divider style={{ marginVertical: 6 }} />
+              <Text>Firmware: {deviceRow.fw_version || '-'}</Text>
+              <Text>Uptime: {typeof deviceRow.uptime_s==='number' ? `${deviceRow.uptime_s}s` : '-'}</Text>
+              <Text>Free heap: {typeof deviceRow.free_heap==='number' ? `${deviceRow.free_heap} B` : '-'}</Text>
+            </View>
+          )}
+        </Card.Content>
+      </Card>
 
       <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
         <Card.Title title="Hardware Config" />

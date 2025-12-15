@@ -127,11 +127,12 @@ export default function DeviceProvisioningScreen() {
   // Align with ToyFormScreen: location dropdown suggestions
   const DEFAULT_LOCATIONS = ['Living room','Bedroom','Toy house','others'];
   const [locSuggestions, setLocSuggestions] = useState<string[]>([]);
-  const [locMenuOpen, setLocMenuOpen] = useState(false);
-  const locLockRef = useRef(false);
-  const siteUrl = process.env.EXPO_PUBLIC_SITE_URL || '';
-  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
-  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+  const [locMenuOpen, setLocMenuOpen] = useState(false);
+  const locLockRef = useRef(false);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const siteUrl = process.env.EXPO_PUBLIC_SITE_URL || '';
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
   // Ensure Metro bundles native BLE-related modules in Dev Client
   ensureBleDeps();
   const payload = useMemo(() => ({
@@ -479,9 +480,10 @@ export default function DeviceProvisioningScreen() {
             try { ch = await d.readCharacteristicForService(serviceUUID, idCharUUID3); }
             catch { ch = await d.readCharacteristicForService(serviceUUID, idCharUUID2); }
             const b64 = ch?.value || '';
-            const decoded = b64Decode(b64);
-            const idStr = decoded?.trim();
-            const disp = toDisplaySuffixFromDeviceId(idStr || '');
+            let idStr = '';
+            try { const decoded = b64Decode(b64); idStr = String(decoded || '').trim(); }
+            catch (e:any) { debug(`Step[ReadID] FFF3/FFF2 decode error: ${e?.message || e}; raw=${b64}`); idStr = ''; }
+            const disp = toDisplaySuffixFromDeviceId(idStr || '');
             setSelected({ id, name: `PINME-${disp}` });
             setSnackbarMsg(`Connected to PINME-${disp}`);
             setSnackbarVisible(true);
@@ -511,9 +513,10 @@ export default function DeviceProvisioningScreen() {
             try { ch = await d.readCharacteristicForService(serviceUUID, idCharUUID3); }
             catch { ch = await d.readCharacteristicForService(serviceUUID, idCharUUID2); }
             const b64 = ch?.value || '';
-            const decoded = b64Decode(b64);
-            const idStr = decoded?.trim();
-            const disp = toDisplaySuffixFromDeviceId(idStr || '');
+            let idStr = '';
+            try { const decoded = b64Decode(b64); idStr = String(decoded || '').trim(); }
+            catch (e:any) { debug(`Step[ReadID] FFF3/FFF2 decode error (fallback): ${e?.message || e}; raw=${b64}`); idStr = ''; }
+            const disp = toDisplaySuffixFromDeviceId(idStr || '');
             setSelected({ id, name: `PINME-${disp}` });
             setSnackbarMsg(`Connected to PINME-${disp}`);
             setSnackbarVisible(true);
@@ -852,9 +855,11 @@ const scanAndShowPinmeList = async () => {
             let ch: any;
             try { ch = await dev.readCharacteristicForService(serviceUUID, idCharUUID3); }
             catch { ch = await dev.readCharacteristicForService(serviceUUID, idCharUUID2); }
-            const b64 = ch?.value || '';
-            const decoded = b64Decode(b64).trim();
-            if (decoded) {
+            const b64 = ch?.value || '';
+            let decoded = '';
+            try { decoded = String(b64Decode(b64) || '').trim(); }
+            catch (e:any) { debug(`Step[Conn] FFF3/FFF2 decode error: ${e?.message || e}; raw=${b64}`); decoded = ''; }
+            if (decoded) {
               const norm = toDeviceId(decoded);
               setDeviceId(norm);
               const disp = toDisplaySuffixFromDeviceId(norm);
@@ -874,12 +879,14 @@ const scanAndShowPinmeList = async () => {
           const echoCharUUID = '0000fff2-0000-1000-8000-00805f9b34fb';
           const sub = dev.monitorCharacteristicForService(serviceUUID, echoCharUUID, (error: any, characteristic: any) => {
             if (error) { debug(`Step[Conn] FFF2 subscription callback error: ${error?.message || error}`); return; }
-            const b64 = characteristic?.value || '';
-            const msg = b64Decode(b64).trim();
-            updateWifiStatusFromMsg(msg);
-            handleWifiListMessage(msg);
+            const b64 = characteristic?.value || '';
+            let msg = '';
+            try { msg = String(b64Decode(b64) || '').trim(); }
+            catch (e:any) { debug(`Step[Conn] FFF2 decode error: ${e?.message || e}; raw=${b64}`); msg = ''; }
+            updateWifiStatusFromMsg(msg);
+            handleWifiListMessage(msg);
             debug(`Step[Conn] FFF2 notification: ${msg}`);
-          });
+          });
           (bleRef as any).currentSubRef = { current: sub };
           debug('Step[Conn] Subscribed FFF2');
         } catch (e:any) {
@@ -970,9 +977,11 @@ const scanAndShowPinmeList = async () => {
       try {
         const idCharUUID3 = '0000fff3-0000-1000-8000-00805f9b34fb';
         const ch3 = await d.readCharacteristicForService(serviceUUID, idCharUUID3).catch(() => null);
-        const v = ch3?.value || '';
-        const idUtf8 = v ? b64Decode(v).trim() : '';
-        if (idUtf8) deviceIdForJwt = toDeviceId(idUtf8);
+        const v = ch3?.value || '';
+        let idUtf8 = '';
+        try { idUtf8 = v ? String(b64Decode(v) || '').trim() : ''; }
+        catch (e:any) { debug(`Step[Provision] FFF3 decode error: ${e?.message || e}; raw=${v}`); idUtf8 = ''; }
+        if (idUtf8) deviceIdForJwt = toDeviceId(idUtf8);
         if (deviceIdForJwt) debug(`Step[Provision] FFF3 read device_id=${deviceIdForJwt}`);
       } catch {}
       // Fallback: use currently selected/parsed deviceId from UI if FFF3 read fails
@@ -1034,13 +1043,16 @@ const scanAndShowPinmeList = async () => {
       const monRef = (bleRef as any).currentSubRef || { current: null };
       (bleRef as any).currentSubRef = monRef;
       debug('Step[Provision] Subscribing FFF2 notifications (status/ACK), waiting for tick/ACK/WIFI_* ...');
-      const sub = d.monitorCharacteristicForService(serviceUUID, echoCharUUID, (error: any, characteristic: any) => {
+      const txId = `wifi-provision-${Date.now()}`;
+      let postSentRef = false;
+      const sub = d.monitorCharacteristicForService(serviceUUID, echoCharUUID, async (error: any, characteristic: any) => {
         if (error) { debug(`Step[Provision] FFF2 subscription callback error: ${error?.message || error}`); return; }
         if (notified) return;
-        const b64 = characteristic?.value || '';
-        const decoded = b64Decode(b64);
-        const msg = String(decoded || '').trim();
-        updateWifiStatusFromMsg(msg);
+        const b64 = characteristic?.value || '';
+        let msg = '';
+        try { const decoded = b64Decode(b64); msg = String(decoded || '').trim(); }
+        catch (e:any) { debug(`Step[Provision] FFF2 decode error: ${e?.message || e}; raw=${b64}`); msg = ''; }
+        updateWifiStatusFromMsg(msg);
         debug(`Step[Provision] FFF2 notify utf8=${msg}`);
         if (/ACK_RX_LEN/i.test(msg)) debug('Step[Provision] Detected ACK_RX_LEN');
         if (/ACK LEN/i.test(msg)) debug('Step[Provision] Detected ACK LEN');
@@ -1048,16 +1060,74 @@ const scanAndShowPinmeList = async () => {
         if (/DATA_RECEIVED/i.test(msg)) debug('Step[Provision] Detected DATA_RECEIVED');
         if (/JWT_SAVED/i.test(msg)) debug('Step[Provision] Detected JWT_SAVED');
         if (/ACK_JWT/i.test(msg)) debug('Step[Provision] Detected ACK_JWT');
-        if (/WIFI_OK/i.test(msg)) {
-          notified = true;
-          setWifiProvisionOk(true);
-          setConnecting(false);
-          setSuccess(true);
+        if (/WIFI_OK/i.test(msg)) {
+          notified = true;
+          setWifiProvisionOk(true);
+          setConnecting(false);
+          setSuccess(true);
           // Final success message in English
           // 要求：连接成功提示为“connect wifi success”
           setSnackbarMsg('connect wifi success');
           setSnackbarVisible(true);
           appendStatus('connect wifi success');
+          if (!postSentRef) {
+            postSentRef = true;
+            try {
+              const { encodeChunkCommands } = await import('../../utils/chunk');
+              const writeChunked = async (
+                device: any,
+                serviceUUID: string,
+                writeCharUUID: string,
+                tag: 'SUPA_CFG' | 'JWT_SET' | 'CA_SET',
+                text: string,
+                chunkSize = 16
+              ) => {
+                const cmds = encodeChunkCommands(tag as any, text, chunkSize);
+                for (const c of cmds) {
+                  await device.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode(c));
+                }
+              };
+              const sbUrlTrim = String(supabaseUrl || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+              const anonTrim = String(anonKey || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+              const cfg: any = {};
+              if (anonTrim.length > 0) cfg.anon = anonTrim;
+              if (sbUrlTrim.length > 0) cfg.supabase_url = sbUrlTrim;
+              if (Object.keys(cfg).length > 0) {
+                const configJson = JSON.stringify(cfg);
+                debug(`Step[Provision] (post-success) CONFIG jsonLen=${configJson.length}`);
+                await writeChunked(d, serviceUUID, writeCharUUID, 'SUPA_CFG', configJson);
+                debug('Step[Provision] (post-success) CONFIG sent (chunked)');
+              } else {
+                debug('Step[Provision] (post-success) Skip CONFIG (anon/supabase_url unavailable)');
+              }
+              if (deviceJwt) {
+                const jwtJson = JSON.stringify({ jwt: deviceJwt });
+                debug(`Step[Provision] (post-success) JWT jsonLen=${jwtJson.length}`);
+                await writeChunked(d, serviceUUID, writeCharUUID, 'JWT_SET', jwtJson);
+                debug('Step[Provision] (post-success) JWT_SET sent (chunked)');
+              } else {
+                debug('Step[Provision] (post-success) Skip JWT write: issuance failed or token empty');
+              }
+              try {
+                const caBundle = (process.env.EXPO_PUBLIC_SUPABASE_CA_BUNDLE || '').trim();
+                if (caBundle && caBundle.length > 0) {
+                  await writeChunked(d, serviceUUID, writeCharUUID, 'CA_SET', caBundle);
+                  debug('Step[Provision] (post-success) CA_SET sent (chunked)');
+                } else {
+                  debug('Step[Provision] (post-success) Skip CA_SET: bundle env missing');
+                }
+                const insecureFlag = String(process.env.EXPO_PUBLIC_TLS_INSECURE_ON || '').trim();
+                if (insecureFlag === '1' || insecureFlag.toLowerCase() === 'true') {
+                  await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode('DEV_INSECURE_ON'));
+                  debug('Step[Provision] (post-success) DEV_INSECURE_ON sent');
+                }
+              } catch (e:any) {
+                debug(`Step[Provision] (post-success) CA_SET failed: ${e?.message || e}`);
+              }
+            } catch (e:any) {
+              debug(`Step[Provision] (post-success) send config/jwt failed: ${e?.message || e}`);
+            }
+          }
           // Auto-save removed per requirements; user must tap Save manually
           // 自动触发一次 HEARTBEAT_NOW（仅一次）
           if (!hbNowSentRef.current) {
@@ -1079,38 +1149,79 @@ const scanAndShowPinmeList = async () => {
                   .select('last_seen,status,wifi_signal,wifi_ssid,updated_at')
                   .eq('device_id', did)
                   .maybeSingle();
-                if (data) {
-                  const last = data?.last_seen ? new Date(data.last_seen as any).getTime() : 0;
-                  const recent = last > 0 && (Date.now() - last) < 5 * 60 * 1000; // 5 分钟内视为在线
-                  const onlineFlag = String(data?.status || '').toLowerCase() === 'online';
-                  const hasSignal = typeof data?.wifi_signal === 'number' && !Number.isNaN(data.wifi_signal);
-                  if (recent || onlineFlag || hasSignal) {
-                    clearInterval(timer);
-                    appendStatus('Online confirmed via heartbeat (HTTP 204).');
+                if (data) {
+                  // 与 Supabase devices.status 保持一致，不再基于 5 分钟 last_seen 阈值
+                  const onlineFlag = String(data?.status || '').toLowerCase() === 'online';
+                  const hasSignal = typeof data?.wifi_signal === 'number' && !Number.isNaN(data.wifi_signal);
+                  if (onlineFlag || hasSignal) {
+                    clearInterval(timer);
+                    appendStatus('Online confirmed via heartbeat (HTTP 204).');
           setSnackbarMsg('Device online');
           setSnackbarVisible(true);
-                  }
-                }
-              } catch (e) {
+                  }
+                }
+              } catch (e: any) {
                 debug(`Step[Provision] Online poll error: ${e?.message || String(e)}`);
-              }
+              }
               if (attempts >= maxAttempts) {
                 clearInterval(timer);
                 appendStatus('Timeout waiting for online confirmation. You can retry HEARTBEAT_NOW or check Wi‑Fi stability.');
               }
             }, 2000);
-          } catch (e) {
+          } catch (e: any) {
             debug(`Step[Provision] Failed to start online confirmation polling: ${e?.message || String(e)}`);
-          }
-        } else if (/WIFI_STA_CONNECTED/i.test(msg)) {
-          notified = true;
-          setWifiProvisionOk(true);
-          setConnecting(false);
-          setSuccess(true);
+          }
+        } else if (/WIFI_STA_CONNECTED/i.test(msg)) {
+          notified = true;
+          setWifiProvisionOk(true);
+          setConnecting(false);
+          setSuccess(true);
           // 要求：连接成功提示为“connect wifi success”
           setSnackbarMsg('connect wifi success');
           setSnackbarVisible(true);
           appendStatus('connect wifi success');
+          if (!postSentRef) {
+            postSentRef = true;
+            try {
+              const { encodeChunkCommands } = await import('../../utils/chunk');
+              const writeChunked = async (
+                device: any,
+                serviceUUID: string,
+                writeCharUUID: string,
+                tag: 'SUPA_CFG' | 'JWT_SET' | 'CA_SET',
+                text: string,
+                chunkSize = 16
+              ) => {
+                const cmds = encodeChunkCommands(tag as any, text, chunkSize);
+                for (const c of cmds) {
+                  await device.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode(c));
+                }
+              };
+              const sbUrlTrim = String(supabaseUrl || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+              const anonTrim = String(anonKey || '').trim().replace(/^['"\s]+|['"\s]+$/g, '');
+              const cfg: any = {};
+              if (anonTrim.length > 0) cfg.anon = anonTrim;
+              if (sbUrlTrim.length > 0) cfg.supabase_url = sbUrlTrim;
+              if (Object.keys(cfg).length > 0) {
+                const configJson = JSON.stringify(cfg);
+                debug(`Step[Provision] (post-success) CONFIG jsonLen=${configJson.length}`);
+                await writeChunked(d, serviceUUID, writeCharUUID, 'SUPA_CFG', configJson);
+                debug('Step[Provision] (post-success) CONFIG sent (chunked)');
+              } else {
+                debug('Step[Provision] (post-success) Skip CONFIG (anon/supabase_url unavailable)');
+              }
+              if (deviceJwt) {
+                const jwtJson = JSON.stringify({ jwt: deviceJwt });
+                debug(`Step[Provision] (post-success) JWT jsonLen=${jwtJson.length}`);
+                await writeChunked(d, serviceUUID, writeCharUUID, 'JWT_SET', jwtJson);
+                debug('Step[Provision] (post-success) JWT_SET sent (chunked)');
+              } else {
+                debug('Step[Provision] (post-success) Skip JWT write: issuance failed or token empty');
+              }
+            } catch (e:any) {
+              debug(`Step[Provision] (post-success) send config/jwt failed: ${e?.message || e}`);
+            }
+          }
           // Auto-save removed per requirements; user must tap Save manually
           // 自动触发一次 HEARTBEAT_NOW（仅一次）
           if (!hbNowSentRef.current) {
@@ -1132,29 +1243,28 @@ const scanAndShowPinmeList = async () => {
                   .select('last_seen,status,wifi_signal,wifi_ssid,updated_at')
                   .eq('device_id', did)
                   .maybeSingle();
-                if (data) {
-                  const last = data?.last_seen ? new Date(data.last_seen as any).getTime() : 0;
-                  const recent = last > 0 && (Date.now() - last) < 5 * 60 * 1000;
-                  const onlineFlag = String(data?.status || '').toLowerCase() === 'online';
-                  const hasSignal = typeof data?.wifi_signal === 'number' && !Number.isNaN(data.wifi_signal);
-                  if (recent || onlineFlag || hasSignal) {
-                    clearInterval(timer);
-                    appendStatus('Online confirmed (WIFI_STA_CONNECTED).');
-                    setSnackbarMsg('Device online');
-                    setSnackbarVisible(true);
-                  }
-                }
-              } catch (e) {
+                if (data) {
+                  // 与 Supabase devices.status 保持一致，不再基于 5 分钟 last_seen 阈值
+                  const onlineFlag = String(data?.status || '').toLowerCase() === 'online';
+                  const hasSignal = typeof data?.wifi_signal === 'number' && !Number.isNaN(data.wifi_signal);
+                  if (onlineFlag || hasSignal) {
+                    clearInterval(timer);
+                    appendStatus('Online confirmed (WIFI_STA_CONNECTED).');
+                    setSnackbarMsg('Device online');
+                    setSnackbarVisible(true);
+                  }
+                }
+              } catch (e: any) {
                 debug(`Step[Provision] Online poll error: ${e?.message || String(e)}`);
-              }
+              }
               if (attempts >= maxAttempts) {
                 clearInterval(timer);
                 appendStatus('Timeout waiting for online confirmation. You can retry HEARTBEAT_NOW or check Wi‑Fi stability.');
               }
             }, 2000);
-          } catch (e) {
+          } catch (e: any) {
             debug(`Step[Provision] Failed to start online confirmation polling: ${e?.message || String(e)}`);
-          }
+          }
         } else if (/WIFI_FAIL/i.test(msg)) {
           notified = true;
           setWifiProvisionOk(false);
@@ -1173,9 +1283,30 @@ const scanAndShowPinmeList = async () => {
         } else if (/tick/i.test(msg)) {
           debug('Step[Provision] Detected tick heartbeat');
         }
-      });
+      }, txId);
       monRef.current = sub;
-      // Simplified path: after subscribing, write config/JWT/Wi‑Fi in顺序（不改动现有 UI），以确保设备具备心跳所需的 anon 与 URL
+      // Simplified path: after subscribing, write config/JWT/Wi‑Fi in顺序（不改动现有 UI），以确保设备具备心跳所需的 anon 与 URL
+      const writeChunked = async (
+        device: any,
+        serviceUUID: string,
+        writeCharUUID: string,
+        tag: 'SUPA_CFG' | 'JWT_SET' | 'CA_SET',
+        text: string,
+        chunkSize = 16
+      ) => {
+        const total = text.length;
+        debug(`Step[Chunk] BEGIN tag=${tag} total=${total} size=${chunkSize}`);
+        await device.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode(`${tag}_BEGIN ${total}`));
+        let seq = 0;
+        for (let i = 0; i < total; i += chunkSize) {
+          const part = text.substring(i, i + chunkSize);
+          debug(`Step[Chunk] DATA tag=${tag} seq=${seq} len=${part.length}`);
+          await device.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode(`${tag}_DATA ${seq} ${part}`));
+          seq++;
+        }
+        debug(`Step[Chunk] END tag=${tag} chunks=${Math.ceil(total / chunkSize)}`);
+        await device.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode(`${tag}_END`));
+      };
       // 1) 下发 Supabase anon/supabase_url（若环境变量可用）
       try {
         // 严格清洗 env 值：去除首尾空白与反引号/引号，避免设备端出现 apikey/URL 包含多余字符导致 401
@@ -1185,21 +1316,20 @@ const scanAndShowPinmeList = async () => {
         const anonTrim = String(anonKey || '')
           .trim()
           .replace(/^['"\s]+|['"\s]+$/g, '');
-        const configObj: any = {};
-        if (anonTrim.length > 0) configObj.anon = anonTrim;
-        if (sbUrlTrim.length > 0) configObj.supabase_url = sbUrlTrim;
-        if (Object.keys(configObj).length > 0) {
-          const configJson = JSON.stringify(configObj);
-          const configB64 = b64Encode(configJson);
-          debug(`Step[Provision] Sent CONFIG (anon/supabase_url): jsonLen=${configJson.length}; b64Len=${configB64.length}`);
-          await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, configB64);
-          debug('Step[Provision] CONFIG_SAVED (expect device to echo)');
-        } else {
+        const configObj: any = {};
+        if (anonTrim.length > 0) configObj.anon = anonTrim;
+        if (sbUrlTrim.length > 0) configObj.supabase_url = sbUrlTrim;
+        if (Object.keys(configObj).length > 0) {
+          const configJson = JSON.stringify(configObj);
+          debug(`Step[Provision] CONFIG jsonLen=${configJson.length}`);
+          await writeChunked(d, serviceUUID, writeCharUUID, 'SUPA_CFG', configJson);
+          debug('Step[Provision] CONFIG sent (chunked)');
+        } else {
           debug('Step[Provision] Skip CONFIG (anon/supabase_url unavailable)');
-        }
-      } catch (e:any) {
+        }
+      } catch (e:any) {
         debug(`Step[Provision] Failed to send CONFIG: ${e?.message || e}`);
-      }
+      }
       // 发送配网 JSON（仅当提供了 SSID 时才发送 {ssid,password}）；否则跳过 Wi‑Fi，仅发送 JWT
       //const ssidTrim = String(ssid || '').trim();
       //const passwordTrim = String(password || '').trim();
@@ -1213,37 +1343,38 @@ const scanAndShowPinmeList = async () => {
         //debug('Step[Provision] Skip Wi‑Fi JSON (no SSID provided); will send JWT only');
       //}
 // ===== 关键修改：不管有没有 SSID，先把 JWT 发过去！=====
-      if (deviceJwt) {
-        const jwtJson = JSON.stringify({ jwt: deviceJwt });
-        // 使用固件专用命令前缀，提升兼容性与可读性
-        const jwtCmd = `JWT_SET ${jwtJson}`;
-        const jwtB64 = b64Encode(jwtCmd);
-        debug(`Step[Provision] Sent JWT_SET: ${jwtB64.substring(0, 40)}... (jsonLen=${jwtJson.length}; b64Len=${jwtB64.length}; deviceId=${deviceIdForJwt})`);
-        await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, jwtB64);
-        debug('Step[Provision] JWT_SET written (waiting for device to echo JWT_SAVED)');
-      }
+      if (deviceJwt) {
+        const jwtJson = JSON.stringify({ jwt: deviceJwt });
+        debug(`Step[Provision] JWT jsonLen=${jwtJson.length}`);
+        await writeChunked(d, serviceUUID, writeCharUUID, 'JWT_SET', jwtJson);
+        debug('Step[Provision] JWT_SET sent (chunked), waiting for JWT_SAVED');
+      }
       else {
         debug('Step[Provision] Skip JWT write: issuance failed or token empty');
       }
       // 3) 再发送 Wi‑Fi 配置（有 SSID 才发；按需附带 jwt）
       const ssidTrim = String(ssid || '').trim();
       const passwordTrim = String(password || '').trim();
-      if (ssidTrim.length > 0) {
-        // 仅发送 {ssid,password}，避免 JSON 过大导致固件解析失败（WIFI_SET_INVALID）
-        const wifiObj: any = { ssid: ssidTrim, password: passwordTrim };
-        const wifiJson = JSON.stringify(wifiObj);
+      if (ssidTrim.length > 0) {
+        // 仅发送 {ssid,password}，避免 JSON 过大导致固件解析失败（WIFI_SET_INVALID）
+        const wifiObj: any = { ssid: ssidTrim, password: passwordTrim };
+        const wifiJson = JSON.stringify(wifiObj);
         const wifiCmd = `WIFI_SET ${wifiJson}`;
-        const wifiB64 = b64Encode(wifiCmd);
+        const wifiB64 = b64Encode(wifiCmd);
         debug(`Step[Provision] Sent WIFI_SET + {ssid,password}: jsonLen=${wifiJson.length}; b64Len=${wifiB64.length}`);
-        await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, wifiB64);
+        await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, wifiB64);
         debug('Step[Provision] Wi‑Fi config sent (without jwt)');
-      }
-      // 启动 BLE 心跳（仅在成功连接且写入后启动）
+      }
+      try {
+        await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode('DEV_INSECURE_ON'));
+        debug('Step[Provision] DEV_INSECURE_ON sent');
+      } catch {}
+      // 启动 BLE 心跳（仅在成功连接且写入后启动）
       try { startBleHeartbeat(d, serviceUUID, writeCharUUID, 30000); debug(`Step[Heartbeat] Initialized for target=${connectedTargetIdRef.current}`); } catch {}
       // Wait up to 30s, then end waiting (without forcing disconnect); cleanup subscription (routers may be slow, allow enough time)
       setTimeout(() => {
         if (!notified) { debug('Step[Provision] Timeout: no notification received'); setConnecting(false); }
-        try { monRef.current?.remove?.(); (bleRef as any).currentSubRef = null; debug('Step[Provision] FFF2 subscription removed'); } catch {}
+        try { if (Platform.OS !== 'android') monRef.current?.remove?.(); (bleRef as any).currentSubRef = null; debug('Step[Provision] FFF2 subscription removed'); } catch {}
       }, 30000);
     } catch (e: any) {
       setError(`Provisioning failed: ${e?.message || String(e)}`);
@@ -1252,12 +1383,16 @@ const scanAndShowPinmeList = async () => {
     }
   };
   // Trigger device Wi‑Fi scan via BLE and receive WIFI_LIST (FFF2 notifications); after selection, show password and Connect
-  const scanWifiListViaBle = async () => {
-    try {
-      setError(null);
-      setWifiItemsBle([]);
-      setShowPasswordInput(false);
-      setLastWifiStatus(null);
+  const scanWifiListViaBle = async () => {
+    try {
+      setError(null);
+      setWifiItemsBle([]);
+      setShowPasswordInput(false);
+      setLastWifiStatus(null);
+      let gotItem = false;
+      let gotNone = false;
+      let ended = false;
+      let retried = false; // auto-rescan once if END arrives with no items
       // 环境预检：Web/Expo Go 不支持 BLE Wi‑Fi 扫描
       if (!supportsNativeModules) {
         setError('BLE Wi‑Fi scan is not supported in this environment. Please run in Dev Client or Release (Android/iOS). On Web, only the current connection can be shown.');
@@ -1283,27 +1418,74 @@ const scanAndShowPinmeList = async () => {
       const writeCharUUID = '0000fff1-0000-1000-8000-00805f9b34fb';
       const echoCharUUID = '0000fff2-0000-1000-8000-00805f9b34fb';
       // Start subscription (if not already)
-      try {
-        const sub = dev.monitorCharacteristicForService(serviceUUID, echoCharUUID, (error: any, characteristic: any) => {
+      try {
+        const sub = dev.monitorCharacteristicForService(serviceUUID, echoCharUUID, (error: any, characteristic: any) => {
           if (error) { debug(`Step[WiFiList] FFF2 subscription callback error: ${error?.message || error}`); return; }
-          const b64 = characteristic?.value || '';
-          const msg = b64Decode(b64).trim();
-          updateWifiStatusFromMsg(msg);
-          handleWifiListMessage(msg);
-          debug(`Step[WiFiList] FFF2 notification: ${msg}`);
-        });
-        (bleRef as any).currentSubRef = { current: sub };
-      } catch {}
+          const b64 = characteristic?.value || '';
+          let msg = '';
+          try { msg = String(b64Decode(b64) || '').trim(); }
+          catch (e:any) { debug(`Step[WiFiList] FFF2 decode error: ${e?.message || e}; raw=${b64}`); msg = ''; }
+          // Always track status internally, but only log list-specific messages
+          updateWifiStatusFromMsg(msg);
+          if (/^(WIFI_LIST_|WIFI_ITEM\s)/.test(msg)) {
+            debug(`Step[WiFiList] FFF2 notification: ${msg}`);
+          }
+          if (ended) return;
+          // Parse list phase messages locally to support auto-rescan and suppression
+          if (msg === 'WIFI_LIST_BEGIN') { setWifiItemsBle([]); gotItem = false; gotNone = false; return; }
+          if (msg === 'WIFI_LIST_NONE') { gotNone = true; return; }
+          if (msg === 'WIFI_LIST_END') {
+            if (!gotItem && !retried) {
+              ended = true; retried = true;
+              setTimeout(async () => {
+                ended = false; gotItem = false; gotNone = false; setWifiItemsBle([]);
+                try {
+                  await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode('WIFI_LIST'));
+                  debug('Step[WiFiList] sent WIFI_LIST (auto-rescan)');
+                } catch (e:any) {
+                  debug(`Step[WiFiList] auto-rescan failed: ${e?.message || e}`);
+                  try { if (Platform.OS !== 'android') (bleRef as any).currentSubRef?.current?.remove?.(); } catch {}
+                  setWifiBlePickerVisible(false);
+                }
+              }, 1500);
+              return;
+            }
+            ended = true;
+            if (!gotItem) {
+              setError('No Wi‑Fi found nearby. Please move closer to the router or retry.');
+              setWifiBlePickerVisible(false);
+            }
+            try { if (Platform.OS !== 'android') (bleRef as any).currentSubRef?.current?.remove?.(); } catch {}
+            return;
+          }
+          // Ignore non-list status messages during Wi‑Fi listing phase
+          if (/^WIFI_(CONNECTING|AP_NOT_FOUND|OK|STA_CONNECTED)/i.test(msg)) { return; }
+          if (msg.startsWith('WIFI_ITEM ')) {
+            const payload = msg.substring('WIFI_ITEM '.length);
+            const parts = payload.split('|');
+            const ssid = parts[0] ?? '';
+            const rssi = parseInt(parts[1] ?? '0', 10);
+            const enc = parts[2] ?? '';
+            gotItem = true;
+            setWifiItemsBle(prev => {
+              const filtered = prev.filter(i => i.ssid !== ssid);
+              return [...filtered, { ssid, rssi, enc }];
+            });
+            return;
+          }
+        }, 'wifi-list');
+        (bleRef as any).currentSubRef = { current: sub };
+      } catch {}
       // 重置一次性触发标记（每次新的配网流程）
       hbNowSentRef.current = false;
       // Send WIFI_LIST request (Base64)
       await d.writeCharacteristicWithResponseForService(serviceUUID, writeCharUUID, b64Encode('WIFI_LIST'));
       debug('Step[WiFiList] sent WIFI_LIST request, waiting for device to push list via FFF2');
-    } catch (e:any) {
+    } catch (e:any) {
       setError(`WIFI_LIST scan failed: ${e?.message || e}`);
-      setWifiBlePickerVisible(false);
-    }
-  };
+      setWifiBlePickerVisible(false);
+    }
+  };
   const onPickWifiBle = (ssidSel: string, encSel?: string) => {
     setSsid(ssidSel);
     setSelectedWifiEnc(encSel || null);
@@ -1320,14 +1502,18 @@ const scanAndShowPinmeList = async () => {
     setError('Unable to open device web config. Ensure you are connected to the device AP or the device is on your Wi‑Fi.');
   };
   // Save: allow saving as offline even if Wi‑Fi not confirmed; requires non-empty name/location
-  const saveDeviceInfo = async () => {
-    try {
-      setError(null);
-      setSending(true);
-      appendStatus('Step[Save] begin saving device into Supabase');
-      const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes?.user?.id;
-      if (!uid) { setError('Please sign in before saving'); setSending(false); return; }
+  const saveDeviceInfo = async () => {
+    try {
+      setError(null);
+      setSending(true);
+      saveTimeoutRef.current = setTimeout(() => {
+        setSending(false);
+        setError('Save timeout. Please check network and try again.');
+      }, 15000);
+      appendStatus('Step[Save] begin saving device into Supabase');
+      const { data: userRes } = await supabase.auth.getUser();
+      const uid = userRes?.user?.id;
+      if (!uid) { setError('Please sign in before saving'); setSending(false); return; }
     appendStatus(`Step[Save] got user id=${uid}`);
       // If connected, try reading the real device ID from FFF3
       let did = toDeviceId(deviceId);
@@ -1338,9 +1524,11 @@ const scanAndShowPinmeList = async () => {
           const d = dev ? await dev.discoverAllServicesAndCharacteristics() : null;
           if (d) {
             const ch3 = await d.readCharacteristicForService('0000fff0-0000-1000-8000-00805f9b34fb', '0000fff3-0000-1000-8000-00805f9b34fb').catch(() => null);
-            const v = ch3?.value || '';
-            const idUtf8 = v ? b64Decode(v).trim() : '';
-            if (idUtf8 && /^ESP32_/i.test(idUtf8)) { did = toDeviceId(idUtf8); }
+            const v = ch3?.value || '';
+            let idUtf8 = '';
+            try { idUtf8 = v ? String(b64Decode(v) || '').trim() : ''; }
+            catch (e:any) { debug(`Step[Save] FFF3 decode error: ${e?.message || e}; raw=${v}`); idUtf8 = ''; }
+            if (idUtf8 && /^ESP32_/i.test(idUtf8)) { did = toDeviceId(idUtf8); }
           }
         }
       } catch {}
@@ -1391,13 +1579,14 @@ const scanAndShowPinmeList = async () => {
           } catch { /* noop */ }
         }, 500);
       } catch { /* noop */ }
-    } catch (e:any) {
-  setError(`Save failed: ${e?.message || String(e)}`);
-    appendStatus(`Step[Save] Error: ${e?.message || String(e)}`);
-    } finally {
-      setSending(false);
-    }
-  };
+    } catch (e:any) {
+      setError(`Save failed: ${e?.message || String(e)}`);
+      appendStatus(`Step[Save] Error: ${e?.message || String(e)}`);
+    } finally {
+      if (saveTimeoutRef.current) { clearTimeout(saveTimeoutRef.current); saveTimeoutRef.current = null; }
+      setSending(false);
+    }
+  };
   const applyPastedConfig = (text: string) => {
     try {
       const cfg = JSON.parse(text || '{}');

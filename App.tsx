@@ -104,7 +104,7 @@ function HeaderBellButton() {
 function HomeStackScreen() {
   const paperTheme = useTheme();
   return (
-    <HomeStack.Navigator screenOptions={{ animation: 'slide_from_right', headerStyle: { height: 56 }, headerShadowVisible: true }}>
+    <HomeStack.Navigator screenOptions={{ animation: 'slide_from_right', headerShadowVisible: true }}>
       <HomeStack.Screen
         name="HomeMain"
         component={HomeScreen}

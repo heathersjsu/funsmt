@@ -4,7 +4,7 @@ import { Text, TextInput, Button, Card, Divider, List, HelperText, Portal, Dialo
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Device } from '../../types';
-import { Camera, CameraType } from 'expo-camera';
+import * as ExpoCamera from 'expo-camera';
 import QRCode from 'react-native-qrcode-svg';
 
 type Props = NativeStackScreenProps<any>;
@@ -70,7 +70,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
       const uid = userRes?.user?.id;
       const { data, error } = await supabase
         .from('devices')
-        .select('device_id,name,location,status,last_seen,wifi_signal')
+        .select('device_id,name,location,status,last_seen,wifi_signal,wifi_ssid')
         .eq('user_id', uid);
       if (error) setError(error.message);
       setDevices(data || []);
@@ -153,7 +153,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
       setShowAddDialog(true);
       return;
     }
-    const { status } = await Camera.requestCameraPermissionsAsync();
+    const { status } = await (ExpoCamera as any).Camera?.requestCameraPermissionsAsync?.();
     setHasCamPermission(status === 'granted');
     if (status !== 'granted') {
       setError('Camera permission not granted. Please allow camera access.');
@@ -165,7 +165,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
   const openIdScanner = async () => {
     setError(null); setMessage(null);
     try {
-      const { status } = await Camera.requestCameraPermissionsAsync();
+      const { status } = await (ExpoCamera as any).Camera?.requestCameraPermissionsAsync?.();
       if (status === 'granted') {
         setIdHasCamPermission(true);
         setIdScanOpen(true);
@@ -267,7 +267,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
       .limit(1);
     const supabaseConnected = !supaErr;
 
-    // Data flow check: recent last_seen within 5 minutes
+    // Data flow check: 与 Supabase devices.status 保持一致（status === 'online'）
     const { data, error: qErr } = await supabase
       .from('devices')
       .select('last_seen,status,wifi_signal,updated_at')
@@ -275,11 +275,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
       .maybeSingle();
     if (qErr) { setError(qErr.message); return; }
 
-    let dataFlowWorking = false;
-    if (data?.last_seen) {
-      const last = new Date(data.last_seen as any).getTime();
-      dataFlowWorking = (Date.now() - last) < 5 * 60 * 1000;
-    }
+    const dataFlowWorking = String((data?.status as string) || '').toLowerCase() === 'online';
 
     const lastText = data?.last_seen ? formatAgo(data.last_seen as any) : '-';
     const st = (data?.status as string) || 'offline';
@@ -426,12 +422,12 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
 
       {scanningQR && Platform.OS !== 'web' && (
         <View style={styles.scannerOverlay}>
-          <Camera
-            type={CameraType.back}
-            onBarCodeScanned={onBarCodeScanned as any}
-            barCodeScannerSettings={{ barCodeTypes: ['qr'] } as any}
-            style={styles.scanner}
-          />
+          {React.createElement(((ExpoCamera as any).CameraView || (ExpoCamera as any).Camera), {
+            type: ((ExpoCamera as any).CameraType?.back ?? 'back'),
+            onBarCodeScanned: onBarCodeScanned as any,
+            barCodeScannerSettings: { barCodeTypes: ['qr'] } as any,
+            style: styles.scanner,
+          })}
           <View style={{ position: 'absolute', bottom: 24, left: 0, right: 0, alignItems: 'center' }}>
             <Button mode="contained" onPress={() => setScanningQR(false)}>Cancel</Button>
           </View>

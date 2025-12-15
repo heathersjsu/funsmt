@@ -45,8 +45,11 @@ export default function EditProfileScreen({ navigation }: Props) {
       setError('Photo access not granted. Please enable Photos/Media Library permission in system settings and try again.');
       return;
     }
+    // 动态兼容 expo-image-picker 新旧 API，避免弃用警告且保证兼容性
+    const hasNew = !!(ImagePicker as any).MediaType && typeof (ImagePicker as any).MediaType.image !== 'undefined';
+    const mediaTypesParam: any = hasNew ? (ImagePicker as any).MediaType.image : (ImagePicker as any).MediaTypeOptions.Images;
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: mediaTypesParam,
       base64: Platform.OS !== 'web',
       quality: 0.9,
     });
@@ -58,11 +61,11 @@ export default function EditProfileScreen({ navigation }: Props) {
         const isHeic = ct?.includes('heic') || ct?.includes('heif') || asset.uri.toLowerCase().endsWith('.heic') || asset.uri.toLowerCase().endsWith('.heif');
         try {
           // 对所有原生平台图片进行压缩和转码，头像尺寸更小更快
-          const manipulated = await ImageManipulator.manipulateAsync(
-            asset.uri,
-            [{ resize: { width: 1024 } }],
-            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
-          );
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 1024 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
           setOriginalAssetUri(asset.uri);
           setAvatarUrl(manipulated.uri);
           setAvatarBase64(manipulated.base64 || null);
@@ -116,11 +119,11 @@ export default function EditProfileScreen({ navigation }: Props) {
             const baseUri = originalAssetUri || avatarUrl;
             if (baseUri) {
               try {
-                const m1 = await ImageManipulator.manipulateAsync(
-                  baseUri,
-                  [{ resize: { width: 720 } }],
-                  { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
-                );
+          const m1 = await ImageManipulator.manipulateAsync(
+            baseUri,
+            [{ resize: { width: 720 } }],
+            { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+          );
                 setAvatarUrl(m1.uri);
                 setAvatarBase64(m1.base64 || null);
                 finalAvatarUrl = await tryUpload(m1.base64 || avatarBase64, ct);
@@ -130,7 +133,7 @@ export default function EditProfileScreen({ navigation }: Props) {
                   const m2 = await ImageManipulator.manipulateAsync(
                     baseUri,
                     [{ resize: { width: 480 } }],
-                    { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                    { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG, base64: true }
                   );
                   setAvatarUrl(m2.uri);
                   setAvatarBase64(m2.base64 || null);

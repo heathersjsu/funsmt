@@ -3,8 +3,9 @@ import { ScrollView, View } from 'react-native';
 import { Text, Button, useTheme, ActivityIndicator } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
-import { clearNotificationHistory, getNotificationHistory, NotificationHistoryItem } from '../../utils/notifications';
+import { clearNotificationHistory, getNotificationHistory, NotificationHistoryItem, clearUnreadCount } from '../../utils/notifications';
 import { useFocusEffect } from '@react-navigation/native';
+import { useNotifications } from '../../context/NotificationsContext';
 
 function formatTime(ts: number) {
   try {
@@ -17,6 +18,7 @@ function formatTime(ts: number) {
 
 export default function NotificationHistoryScreen() {
   const theme = useTheme();
+  const { setUnreadCount } = useNotifications();
   const [items, setItems] = useState<NotificationHistoryItem[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -28,7 +30,14 @@ export default function NotificationHistoryScreen() {
     setLoading(false);
   }, []);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(useCallback(() => {
+    (async () => {
+      await load();
+      // Visiting history marks notifications as read
+      await clearUnreadCount();
+      setUnreadCount(0);
+    })();
+  }, [load, setUnreadCount]));
 
   const handleClear = async () => {
     setLoading(true);
@@ -48,7 +57,8 @@ export default function NotificationHistoryScreen() {
   } as Record<string, { label: string; color: string }>), [theme.colors.secondary]);
 
   const ItemRow = ({ it }: { it: NotificationHistoryItem }) => {
-    const meta = sourceMeta[it.source || 'unknown'] || sourceMeta.unknown;
+    const baseSource = (it.source || '').split(':')[0] || 'unknown';
+    const meta = sourceMeta[baseSource] || sourceMeta.unknown;
     return (
       <View style={{
         flexDirection: 'row',

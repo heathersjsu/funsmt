@@ -1,14 +1,20 @@
 import { createClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 
-const SUPABASE_URL_RAW = process.env.EXPO_PUBLIC_SUPABASE_URL as string | undefined;
-const SUPABASE_ANON_KEY_RAW = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY as string | undefined;
+// Prefer EXPO_PUBLIC_* (bundled to web), fall back to app config extra for native/web
+const SUPABASE_URL_RAW = (process.env.EXPO_PUBLIC_SUPABASE_URL as string | undefined)
+  || (Constants?.expoConfig?.extra as any)?.SUPABASE_URL
+  || ((Constants as any)?.manifest?.extra)?.SUPABASE_URL;
+const SUPABASE_ANON_KEY_RAW = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY as string | undefined)
+  || (Constants?.expoConfig?.extra as any)?.SUPABASE_ANON_KEY
+  || ((Constants as any)?.manifest?.extra)?.SUPABASE_ANON_KEY;
 const hasEnv = !!(SUPABASE_URL_RAW && SUPABASE_ANON_KEY_RAW);
 // 防止因环境变量缺失而在模块加载阶段抛错导致白屏：
 // 若缺失，则使用占位地址创建客户端，以便应用能显示登录页和错误提示。
-const SUPABASE_URL = (SUPABASE_URL_RAW || 'http://localhost:9999').trim();
-const SUPABASE_ANON_KEY = (SUPABASE_ANON_KEY_RAW || 'anon-placeholder-key').trim();
+const SUPABASE_URL = (SUPABASE_URL_RAW || 'https://kjitkkeerytijbcgkqjj.supabase.co').trim();
+const SUPABASE_ANON_KEY = (SUPABASE_ANON_KEY_RAW || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqaXRra2Vlcnl0aWpiY2drcWpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MzgxMjUsImV4cCI6MjA3NjExNDEyNX0.isMJIUbp7pDTxs3RBA1-paGVvQUl-TQS6t1GcwtD1Vc').trim();
 if (!hasEnv && typeof window !== 'undefined') {
   try { console.error('[Supabase] Missing environment variables: EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY'); } catch {}
 }
@@ -51,8 +57,6 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     autoRefreshToken: true,
     // 不从 URL 解析会话（我们不使用 magic link 回传）
     detectSessionInUrl: false,
-    // 跨标签页同步（同一 origin 下有效）
-    multiTab: true,
     // 明确指定存储适配器与 Key（Web/Native）
     storage: Platform.OS === 'web' ? webLocalStorageAdapter : nativeSecureStoreAdapter,
     storageKey: STORAGE_KEY,

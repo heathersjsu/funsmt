@@ -2,16 +2,27 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Card, Text, Switch, Button, HelperText, Checkbox, SegmentedButtons, useTheme, TextInput, Dialog, Portal } from 'react-native-paper';
 import { getNotificationHistory, NotificationHistoryItem } from '../../utils/notifications';
-import * as SecureStore from 'expo-secure-store';
+import { supabase } from '../../supabaseClient';
 import { IdleToySettings, runIdleScan } from '../../reminders/idleToy';
+import { loadIdleToySettings, saveIdleToySettings } from '../../utils/reminderSettings';
 
-const KEY = 'reminder_idletoy_settings';
+// Settings centralized in Supabase with local fallback
 
-async function loadSettings(): Promise<IdleToySettings> {
-  try { const raw = await SecureStore.getItemAsync(KEY); if (raw) return JSON.parse(raw); } catch {}
-  return { enabled: false, days: 14, smartSuggest: true };
+function formatTime(ts: number) {
+  try { return new Date(ts).toLocaleString(); } catch { return String(ts); }
 }
-async function saveSettings(s: IdleToySettings) { try { await SecureStore.setItemAsync(KEY, JSON.stringify(s)); } catch {} }
+function getToyNameFromBody(body?: string) {
+  if (!body) return undefined as any;
+  const prefix = 'Friendly reminder: ';
+  const s = body.startsWith(prefix) ? body.slice(prefix.length) : body;
+  let m = s.match(/^(.+?) has been played/i);
+  if (m && m[1]) return m[1];
+  m = s.match(/^(.+?) (has been idle|hasn't played)/i);
+  if (m && m[1]) return m[1];
+  m = s.replace(/^温馨提示：/, '').match(/^(?:(.+?)的)?(.+?)已连续玩\s*(\d+)\s*分钟/i);
+  if (m) { const toy = m[2]; return toy?.trim(); }
+  return undefined as any;
+}
 
 export default function IdleToySettingsScreen() {
   const theme = useTheme();
@@ -21,14 +32,24 @@ export default function IdleToySettingsScreen() {
   const [info, setInfo] = useState('');
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const [scanItems, setScanItems] = useState<NotificationHistoryItem[]>([]);
+  const [scanLoading, setScanLoading] = useState<boolean>(false);
+  const [scanInfo, setScanInfo] = useState<string>('');
 
-  useEffect(() => { (async () => { const s = await loadSettings(); setEnabled(s.enabled); setDays(String(s.days)); setSmartSuggest(s.smartSuggest); })(); }, []);
+  useEffect(() => { (async () => { const s = await loadIdleToySettings(); setEnabled(s.enabled); setDays(String(s.days)); setSmartSuggest(s.smartSuggest); })(); }, []);
 
   const onSave = async () => {
     const n = parseInt(days, 10);
     const s: IdleToySettings = { enabled, days: isNaN(n) ? 14 : n, smartSuggest };
-    await saveSettings(s);
-    setInfo('Idle Toy Reminder settings saved.');
+    const res = await saveIdleToySettings(s);
+    if (!res.remoteSaved) {
+      if (res.error === 'not_logged_in') {
+        setInfo('Saved locally. Please sign in to sync to cloud.');
+      } else {
+        setInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
+      }
+    } else {
+      setInfo('Idle Toy Reminder settings saved to cloud.');
+    }
   };
 
   const onRunScan = async () => {
@@ -38,6 +59,62 @@ export default function IdleToySettingsScreen() {
   };
 
   const setPreset = (n: number) => setDays(String(n));
+
+  const uniqueThresholds = (custom: number): number[] => {
+    const set = new Set<number>([custom, 7, 30]);
+    return Array.from(set).sort((a, b) => a - b);
+  };
+
+  const openScan = async () => {
+    setScanInfo('');
+    setScanLoading(true);
+    setScanDialogOpen(true);
+    const n = parseInt(days, 10);
+    const threshold = isNaN(n) ? 14 : n;
+    const thresholds = uniqueThresholds(threshold);
+
+    let liveItems: NotificationHistoryItem[] = [];
+    try {
+      const { data: userRes } = await supabase.auth.getUser();
+      const uid = userRes?.user?.id;
+      if (!uid) {
+        setScanInfo('Not signed in. Showing local history if available.');
+      }
+      const { data: toys } = await supabase.from('toys').select('id,name');
+      const arr = (toys || []) as any[];
+      if (arr.length === 0) {
+        setScanInfo((prev) => prev ? prev + ' No toys found in cloud.' : 'No toys found in cloud.');
+      }
+      for (const t of arr) {
+        const tid = t.id as string;
+        const name = (t.name as string) || 'Toy';
+        const { data: last } = await supabase
+          .from('play_sessions')
+          .select('scan_time')
+          .eq('toy_id', tid)
+          .order('scan_time', { ascending: false })
+          .limit(1);
+        const lastScan = ((last || [])[0]?.scan_time as string) || null;
+        const lastTime = lastScan ? new Date(lastScan).getTime() : 0;
+        const daysSince = Math.floor((Date.now() - lastTime) / (24 * 60 * 60 * 1000));
+        if (!lastScan) {
+          const stageToUse = thresholds[0];
+          liveItems.push({ id: `${tid}_never_${stageToUse}`, title: 'Idle Toy Reminder', body: `Friendly reminder: ${name} has not been played with yet (no play history).`, timestamp: Date.now(), source: `idleToy:${tid}:${stageToUse}` });
+        } else if (daysSince >= threshold) {
+          liveItems.push({ id: `${tid}_${lastScan}`, title: 'Idle Toy Reminder', body: `Friendly reminder: ${name} hasn't been played with for ${daysSince} days. It's waiting for you!`, timestamp: Date.now(), source: `idleToy:${tid}:${threshold}` });
+        }
+      }
+      liveItems = liveItems.slice(0, 20);
+    } catch (e) {
+      setScanInfo('Cloud scan failed. Showing local history if available.');
+    }
+    const all = await getNotificationHistory();
+    const historyItems = (all || []).sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
+    const itemsToShow = liveItems.length ? liveItems : historyItems;
+    setScanItems(itemsToShow);
+    setScanLoading(false);
+  };
+  const closeScan = () => setScanDialogOpen(false);
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}> 
@@ -74,16 +151,19 @@ export default function IdleToySettingsScreen() {
       </Card>
       <Portal>
         <Dialog visible={scanDialogOpen} onDismiss={closeScan} style={{ borderRadius: 10 }}>
-          <Dialog.Title style={{ fontSize: 16 }}>Recent idle toys</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title style={{ fontSize: 16 }}>Recent reminders</Dialog.Title>
+          <Dialog.Content style={{ paddingHorizontal: 4 }}>
+            {!!scanInfo && <Text style={{ marginBottom: 6, opacity: 0.7, fontSize: 12 }}>{scanInfo}</Text>}
             <View style={{ maxHeight: 380 }}>
-              {scanItems.length === 0 ? (
+              {scanLoading ? (
+                <Text style={{ opacity: 0.8 }}>Scanning…</Text>
+              ) : scanItems.length === 0 ? (
                 <Text>No records.</Text>
               ) : (
                 scanItems.map((it) => {
                   const name = getToyNameFromBody(it.body || '') || 'Toy';
                   return (
-                    <View key={it.id} style={{ marginBottom: 8 }}>
+                    <View key={it.id} style={{ marginBottom: 6 }}>
                       <Text style={{ fontWeight: '600', fontSize: 14 }}>{name}</Text>
                       <Text style={{ opacity: 0.7, fontSize: 12 }}>{formatTime(it.timestamp)} · {it.title}</Text>
                       {it.body ? <Text style={{ opacity: 0.8, fontSize: 12 }}>{it.body}</Text> : null}
@@ -108,32 +188,3 @@ const styles = StyleSheet.create({
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   row: { flexDirection: 'row', alignItems: 'center' },
 });
-  const formatTime = (ts: number) => {
-    try {
-      const d = new Date(ts);
-      const now = new Date();
-      const sameDay = d.toDateString() === now.toDateString();
-      const hh = d.getHours().toString().padStart(2, '0');
-      const mm = d.getMinutes().toString().padStart(2, '0');
-      const md = `${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
-      return sameDay ? `${hh}:${mm}` : `${md} ${hh}:${mm}`;
-    } catch { return ''; }
-  };
-
-  const getToyNameFromBody = (body?: string): string | null => {
-    if (!body) return null;
-    const idx = body.indexOf(" hasn't played with you");
-    if (idx > 0) return body.slice(0, idx).trim();
-    return null;
-  };
-
-  const openScan = async () => {
-    const all = await getNotificationHistory();
-    const items = all
-      .filter((i) => (i.source || '').toLowerCase() === 'idletoy')
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, 20);
-    setScanItems(items);
-    setScanDialogOpen(true);
-  };
-  const closeScan = () => setScanDialogOpen(false);

@@ -1,5 +1,6 @@
 import { supabase } from '../supabaseClient';
 import * as FileSystem from 'expo-file-system';
+import { Platform } from 'react-native';
 
 const BUCKET = 'toy-photos';
 
@@ -12,11 +13,11 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, msg = 'Upload tim
 }
 
 async function ensureBucket(): Promise<void> {
-  const { data: buckets } = await supabase.storage.listBuckets();
+  const { data: buckets } = await withTimeout(supabase.storage.listBuckets(), 8000, 'List buckets timed out');
   const exists = (buckets || []).some((b) => b.name === BUCKET);
   if (!exists) {
     try {
-      await supabase.storage.createBucket(BUCKET, { public: true, fileSizeLimit: 10 * 1024 * 1024 });
+      await withTimeout(supabase.storage.createBucket(BUCKET, { public: true, fileSizeLimit: 10 * 1024 * 1024 }), 8000, 'Create bucket timed out');
     } catch {
       // Ignore: creating buckets requires service role; we ensure via migration.
     }
@@ -32,13 +33,14 @@ export async function uploadToyPhoto(localUri: string, userId: string, filenameO
 
   let base64: string | undefined;
   try {
-    base64 = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+    base64 = await withTimeout(FileSystem.readAsStringAsync(localUri, { encoding: 'base64' as any }), 12000, 'Read image timed out');
   } catch (e) {
     // Fallback: copy to cache and retry (helps with content:// URIs on Android and iOS ph://)
     try {
-      const cachePath = `${FileSystem.cacheDirectory}${filename}`;
-      await FileSystem.copyAsync({ from: localUri, to: cachePath });
-      base64 = await FileSystem.readAsStringAsync(cachePath, { encoding: FileSystem.EncodingType.Base64 });
+      const cacheDir: string = (FileSystem as any).cacheDirectory || (FileSystem as any).temporaryDirectory || (FileSystem as any).documentDirectory || '';
+      const cachePath = `${cacheDir}${filename}`;
+      await withTimeout(FileSystem.copyAsync({ from: localUri, to: cachePath }), 8000, 'Copy image timed out');
+      base64 = await withTimeout(FileSystem.readAsStringAsync(cachePath, { encoding: 'base64' as any }), 12000, 'Read image (cache) timed out');
     } catch (e2) {
       throw new Error(`Failed to read image as base64: ${String((e2 as any)?.message || e2)}`);
     }
@@ -120,6 +122,26 @@ function base64ToBlob(base64: string, contentType: string): Blob {
   }
 }
 
+// Prefer ArrayBuffer for React Native: supabase-js accepts ArrayBuffer and this avoids Blob constructor limitations
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  try {
+    const binaryStr = typeof atob === 'function' ? atob(base64) : (global as any).atob(base64);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+    return bytes.buffer;
+  } catch (e) {
+    try {
+      const BufferCtor = (global as any).Buffer || undefined;
+      if (!BufferCtor) throw e;
+      const buf = BufferCtor.from(base64, 'base64');
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    } catch (e2) {
+      throw new Error(`Failed to convert base64 to ArrayBuffer: ${String((e2 as any)?.message || e2)}`);
+    }
+  }
+}
+
 export async function uploadToyPhotoDirect(localUri: string, userId: string, filenameOverride?: string): Promise<string> {
   await ensureBucket();
   const isPng = localUri.toLowerCase().endsWith('.png');
@@ -130,26 +152,55 @@ export async function uploadToyPhotoDirect(localUri: string, userId: string, fil
   try {
     let base64: string | undefined;
     try {
-      base64 = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+      base64 = await withTimeout(FileSystem.readAsStringAsync(localUri, { encoding: 'base64' as any }), 12000, 'Read image timed out');
     } catch (e) {
       // Fallback: copy to cache and retry (helps with content:// URIs on Android and iOS ph://)
-      const cachePath = `${FileSystem.cacheDirectory}${Date.now()}.${ext}`;
-      await FileSystem.copyAsync({ from: localUri, to: cachePath });
-      base64 = await FileSystem.readAsStringAsync(cachePath, { encoding: FileSystem.EncodingType.Base64 });
+      const cacheDir: string = (FileSystem as any).cacheDirectory || (FileSystem as any).temporaryDirectory || (FileSystem as any).documentDirectory || '';
+      const cachePath = `${cacheDir}${Date.now()}.${ext}`;
+      await withTimeout(FileSystem.copyAsync({ from: localUri, to: cachePath }), 8000, 'Copy image timed out');
+      base64 = await withTimeout(FileSystem.readAsStringAsync(cachePath, { encoding: 'base64' as any }), 12000, 'Read image (cache) timed out');
     }
     if (!base64) throw new Error('Failed to read image as base64');
-    const blob = base64ToBlob(base64, contentType);
+    // Use ArrayBuffer instead of Blob to avoid RN Blob constructor limitations
+    const ab = base64ToArrayBuffer(base64);
 
     const { data: signed, error: signErr } = await withTimeout(supabase.storage.from(BUCKET).createSignedUploadUrl(path), 10000);
     if (signErr) throw signErr;
     const token = (signed as any)?.token as string;
-    const { error: upErr } = await withTimeout(supabase.storage.from(BUCKET).uploadToSignedUrl(path, token, blob), 10000);
-    if (upErr) throw upErr;
+    const { error: upErr } = await withTimeout(supabase.storage.from(BUCKET).uploadToSignedUrl(path, token, ab, { contentType }), 10000);
+    if (upErr) {
+      // Fallback: on RN devices where ArrayBuffer path still fails, PUT the signed URL via FileSystem.uploadAsync
+      if (Platform.OS !== 'web') {
+        try {
+          // Ensure we have a usable signed URL
+          const signedUrl: string | undefined = (signed as any)?.signedUrl || (signed as any)?.signedURL;
+          if (!signedUrl) throw upErr;
+          const cacheDir: string = (FileSystem as any).cacheDirectory || (FileSystem as any).temporaryDirectory || (FileSystem as any).documentDirectory || '';
+          const tmpPath = `${cacheDir}${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+          // Write base64 to temp file
+          await FileSystem.writeAsStringAsync(tmpPath, base64!, { encoding: 'base64' as any });
+          const res = await FileSystem.uploadAsync(signedUrl, tmpPath, {
+            httpMethod: 'PUT',
+            headers: { 'Content-Type': contentType },
+          });
+          if (res.status >= 200 && res.status < 300) {
+            try { await FileSystem.deleteAsync(tmpPath, { idempotent: true }); } catch {}
+          } else {
+            try { await FileSystem.deleteAsync(tmpPath, { idempotent: true }); } catch {}
+            throw new Error(`PUT upload failed with status ${res.status}`);
+          }
+        } catch (putErr: any) {
+          throw putErr;
+        }
+      } else {
+        throw upErr;
+      }
+    }
     const { data: pub } = await supabase.storage.from(BUCKET).getPublicUrl(path);
     return pub.publicUrl;
   } catch (e: any) {
-    console.warn('uploadToyPhotoDirect failed, falling back:', e?.message || e);
-    return uploadToyPhoto(localUri, userId, filenameOverride);
+    // 改为客户端直传：不再回退到 Edge Function，直接抛错以便上层处理与重试压缩
+    throw new Error(`uploadToyPhotoDirect failed: ${e?.message || e}`);
   }
 }
 
@@ -161,13 +212,13 @@ export async function uploadToyPhotoWebDirect(blob: Blob, userId: string, filena
     const { data: signed, error: signErr } = await withTimeout(supabase.storage.from(BUCKET).createSignedUploadUrl(path), 10000);
     if (signErr) throw signErr;
     const token = (signed as any)?.token as string;
-    const { error: upErr } = await withTimeout(supabase.storage.from(BUCKET).uploadToSignedUrl(path, token, blob), 10000);
+    const { error: upErr } = await withTimeout(supabase.storage.from(BUCKET).uploadToSignedUrl(path, token, blob, { contentType: blob.type }), 10000);
     if (upErr) throw upErr;
     const { data: pub } = await supabase.storage.from(BUCKET).getPublicUrl(path);
     return pub.publicUrl;
   } catch (e: any) {
-    console.warn('uploadToyPhotoWebDirect failed, falling back:', e?.message || e);
-    return uploadToyPhotoWeb(blob, userId, filenameOverride);
+    // 改为客户端直传：不再回退到 Edge Function
+    throw new Error(`uploadToyPhotoWebDirect failed: ${e?.message || e}`);
   }
 }
 
@@ -177,17 +228,43 @@ export async function uploadBase64PhotoDirect(base64: string, userId: string, co
   const custom = filename || `${Date.now()}.${ext}`;
   const path = `${userId}/${custom}`;
   try {
-    const blob = base64ToBlob(base64, contentType);
+    const ab = base64ToArrayBuffer(base64);
     const { data: signed, error: signErr } = await withTimeout(supabase.storage.from(BUCKET).createSignedUploadUrl(path), 10000);
     if (signErr) throw signErr;
     const token = (signed as any)?.token as string;
-    const { error: upErr } = await withTimeout(supabase.storage.from(BUCKET).uploadToSignedUrl(path, token, blob), 10000);
-    if (upErr) throw upErr;
+    const { error: upErr } = await withTimeout(supabase.storage.from(BUCKET).uploadToSignedUrl(path, token, ab, { contentType }), 10000);
+    if (upErr) {
+      // RN fallback: PUT to signed URL via FileSystem.uploadAsync
+      if (Platform.OS !== 'web') {
+        try {
+          const signedUrl: string | undefined = (signed as any)?.signedUrl || (signed as any)?.signedURL;
+          if (!signedUrl) throw upErr;
+          const ext = contentType.includes('png') ? 'png' : 'jpg';
+          const cacheDir: string = (FileSystem as any).cacheDirectory || (FileSystem as any).temporaryDirectory || (FileSystem as any).documentDirectory || '';
+          const tmpPath = `${cacheDir}${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+          await FileSystem.writeAsStringAsync(tmpPath, base64, { encoding: 'base64' as any });
+          const res = await FileSystem.uploadAsync(signedUrl, tmpPath, {
+            httpMethod: 'PUT',
+            headers: { 'Content-Type': contentType },
+          });
+          if (res.status >= 200 && res.status < 300) {
+            try { await FileSystem.deleteAsync(tmpPath, { idempotent: true }); } catch {}
+          } else {
+            try { await FileSystem.deleteAsync(tmpPath, { idempotent: true }); } catch {}
+            throw new Error(`PUT upload failed with status ${res.status}`);
+          }
+        } catch (putErr: any) {
+          throw putErr;
+        }
+      } else {
+        throw upErr;
+      }
+    }
     const { data: pub } = await supabase.storage.from(BUCKET).getPublicUrl(path);
     return pub.publicUrl;
   } catch (e: any) {
-    console.warn('uploadBase64PhotoDirect failed, falling back:', e?.message || e);
-    return uploadBase64Photo(base64, userId, contentType, filename);
+    // 改为客户端直传：不再回退到 Edge Function
+    throw new Error(`uploadBase64PhotoDirect failed: ${e?.message || e}`);
   }
 }
 
@@ -211,12 +288,8 @@ export async function uploadBase64PhotoBestEffort(base64: string, userId: string
   await ensureBucket();
   const ext = contentType.includes('png') ? 'png' : 'jpg';
   const name = filename || `${Date.now()}.${ext}`;
-  // Hedged request: start Direct first, then Edge Function after a short delay to avoid doubling bandwidth on poor networks
-  return hedgedFirstSuccessful<string>(
-    () => uploadBase64PhotoDirect(base64, userId, contentType, name),
-    () => uploadBase64Photo(base64, userId, contentType, name),
-    1500,
-  );
+  // 改为只走直传：不再回退到 Edge Function
+  return uploadBase64PhotoDirect(base64, userId, contentType, name);
 }
 
 export async function uploadToyPhotoBestEffort(localUri: string, userId: string): Promise<string> {
@@ -224,22 +297,16 @@ export async function uploadToyPhotoBestEffort(localUri: string, userId: string)
   const isPng = localUri.toLowerCase().endsWith('.png');
   const ext = isPng ? 'png' : 'jpg';
   const name = `${Date.now()}.${ext}`;
-  return hedgedFirstSuccessful<string>(
-    () => uploadToyPhotoDirect(localUri, userId, name),
-    () => uploadToyPhoto(localUri, userId, name),
-    1500,
-  );
+  // 改为只走直传：不再回退到 Edge Function
+  return uploadToyPhotoDirect(localUri, userId, name);
 }
 
 export async function uploadToyPhotoWebBestEffort(blob: Blob, userId: string): Promise<string> {
   await ensureBucket();
   const ext = blob.type.includes('png') ? 'png' : 'jpg';
   const name = `${Date.now()}.${ext}`;
-  return hedgedFirstSuccessful<string>(
-    () => uploadToyPhotoWebDirect(blob, userId, name),
-    () => uploadToyPhotoWeb(blob, userId, name),
-    1500,
-  );
+  // 改为只使用直传 Supabase Storage
+  return uploadToyPhotoWebDirect(blob, userId, name);
 }
 
 // Hedged concurrency helper: start the first path, and if it doesn't settle quickly, start the second path.

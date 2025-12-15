@@ -9,7 +9,7 @@ import Svg, { Circle, G, Text as SvgText } from 'react-native-svg';
 import TagCard from '../../components/TagCard';
 import { cartoonGradient } from '../../theme/tokens';
 
-type Props = NativeStackScreenProps<any> & { embedded?: boolean; refreshSignal?: number };
+type Props = { embedded?: boolean; refreshSignal?: number };
 
 export default function StatsScreen({ embedded = false, refreshSignal }: Props) {
   const [toys, setToys] = useState<Toy[]>([]);
@@ -156,7 +156,7 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
               owners: ownersCount,
             };
             return (
-              <TagCard key={variant} variant={variant as any} value={valueMap[variant]} flat={false} format={embedded ? 'toylist' : 'cartoon'} />
+              <TagCard key={variant} variant={variant as any} value={valueMap[variant]} />
             );
           })}
         </View>
@@ -395,4 +395,5 @@ const styles = StyleSheet.create({
   legend: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginTop: 16 },
   legendItem: { flexDirection: 'row', alignItems: 'center', marginRight: 16, marginBottom: 8 },
   legendSwatch: { width: 16, height: 16, borderRadius: 8, marginRight: 8 },
+  legendLabel: { fontSize: 12, fontWeight: '600' },
 });

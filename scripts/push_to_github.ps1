@@ -8,7 +8,7 @@ Write-Host "== Pinme: push to GitHub ==" -ForegroundColor Cyan
 Write-Host "Repo URL: $RepoUrl"
 
 function Exec($cmd) {
-  Write-Host "→ $cmd" -ForegroundColor Yellow
+Write-Host "-> $cmd" -ForegroundColor Yellow
   try {
     iex $cmd
   } catch {

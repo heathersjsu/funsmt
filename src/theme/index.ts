@@ -1,7 +1,8 @@
-import { MD3LightTheme as DefaultTheme, MD3LightTheme, configureFonts } from 'react-native-paper';
+import { MD3LightTheme as DefaultTheme } from 'react-native-paper';
+import type { MD3Theme } from 'react-native-paper';
 import { supabase } from '../supabaseClient';
 
-export function buildKidTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+export function buildKidTheme(overrides?: Partial<MD3Theme['colors']> & { roundness?: number }): MD3Theme {
   // Figma-inspired calmer palette (Chill Calendar style)
   const colors = {
     ...DefaultTheme.colors,
@@ -17,11 +18,11 @@ export function buildKidTheme(overrides?: Partial<MD3LightTheme['colors']> & { r
     ...DefaultTheme,
     roundness: overrides?.roundness ?? 16,
     colors,
-  } as MD3LightTheme;
+  } as MD3Theme;
 }
 
 // Food Delivery style palette: warm brand, sunny accent, clean surfaces
-export function buildFoodTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+export function buildFoodTheme(overrides?: Partial<MD3Theme['colors']> & { roundness?: number }): MD3Theme {
   const colors = {
     ...DefaultTheme.colors,
     primary: '#FF4C29', // vibrant coral/orange brand
@@ -36,11 +37,11 @@ export function buildFoodTheme(overrides?: Partial<MD3LightTheme['colors']> & { 
     ...DefaultTheme,
     roundness: overrides?.roundness ?? 16,
     colors,
-  } as MD3LightTheme;
+  } as MD3Theme;
 }
 
 // Cartoon/Kid-friendly playful theme: aligned with ToyListScreen palette
-export function buildCartoonTheme(overrides?: Partial<MD3LightTheme['colors']> & { roundness?: number }): MD3LightTheme {
+export function buildCartoonTheme(overrides?: Partial<MD3Theme['colors']> & { roundness?: number }): MD3Theme {
   // Unified kid-friendly fonts: Baloo 2 for titles, Nunito for body
   const fonts = {
     ...DefaultTheme.fonts,
@@ -53,7 +54,7 @@ export function buildCartoonTheme(overrides?: Partial<MD3LightTheme['colors']> &
     bodyLarge: { ...DefaultTheme.fonts.bodyLarge, fontFamily: 'Nunito', fontWeight: '400' },
     bodyMedium: { ...DefaultTheme.fonts.bodyMedium, fontFamily: 'Nunito', fontWeight: '400' },
     bodySmall: { ...DefaultTheme.fonts.bodySmall, fontFamily: 'Nunito', fontWeight: '400' },
-  } as MD3LightTheme['fonts'];
+  } as MD3Theme['fonts'];
   const colors = {
     ...DefaultTheme.colors,
     primary: '#FF8C42', // playful orange (buttons, highlights)
@@ -72,7 +73,7 @@ export function buildCartoonTheme(overrides?: Partial<MD3LightTheme['colors']> &
     roundness: overrides?.roundness ?? 20, // slightly larger roundness for capsule-like buttons
     colors,
     fonts,
-  } as MD3LightTheme;
+  } as MD3Theme;
 }
 
 type FigmaVariable = {
@@ -98,8 +99,8 @@ function figmaColorToHex(input: any): string | null {
   return null;
 }
 
-export async function loadFigmaThemeOverrides(): Promise<Partial<MD3LightTheme['colors']>> {
-  const overrides: Partial<MD3LightTheme['colors']> = {};
+export async function loadFigmaThemeOverrides(): Promise<Partial<MD3Theme['colors']>> {
+  const overrides: Partial<MD3Theme['colors']> = {};
   const { data } = await supabase
     .from('figma_variables')
     .select('id,name,variable_type,values')

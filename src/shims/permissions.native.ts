@@ -27,8 +27,8 @@ export const PERMISSIONS = {
     // Android 13+ Wi‑Fi nearby devices permission
     NEARBY_WIFI_DEVICES: 'android.permission.NEARBY_WIFI_DEVICES',
     // Optional Wi‑Fi state permissions (not strictly required for our current flow)
-    ACCESS_WIFI_STATE: PermissionsAndroid.PERMISSIONS.ACCESS_WIFI_STATE,
-    CHANGE_WIFI_STATE: PermissionsAndroid.PERMISSIONS.CHANGE_WIFI_STATE,
+    ACCESS_WIFI_STATE: 'android.permission.ACCESS_WIFI_STATE',
+    CHANGE_WIFI_STATE: 'android.permission.CHANGE_WIFI_STATE',
     // NFC (not covered by PermissionsAndroid API; keep the string constant for checks/requests)
     NFC: 'android.permission.NFC',
   },

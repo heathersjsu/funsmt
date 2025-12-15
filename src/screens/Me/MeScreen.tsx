@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
 import { Text, Card, List, Button, Avatar, Divider, useTheme } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
 import { useNavigation } from '@react-navigation/native';
@@ -16,34 +16,48 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
    const theme = useTheme();
 
 
+  const applyUser = (u: any) => {
+    setEmail(u?.email || null);
+    setUserName(u?.user_metadata?.full_name || u?.email || 'User');
+    setAvatarUrl(u?.user_metadata?.avatar_url || null);
+  };
+
+  const fetchCounts = async () => {
+    const { data, error } = await supabase.from('toys').select('status');
+    if (error) { setToyCounts({ total: 0, out: 0, in: 0 }); return; }
+    const arr = (data || []) as any[];
+    const total = arr.length;
+    const out = arr.filter(t => t.status === 'out').length;
+    const inCount = arr.filter(t => t.status === 'in').length;
+    setToyCounts({ total, out, in: inCount });
+  };
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = async () => {
+    try {
+      setRefreshing(true);
+      const { data } = await supabase.auth.getUser();
+      applyUser(data.user);
+      await fetchCounts();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   useEffect(() => {
-     const applyUser = (u: any) => {
-       setEmail(u?.email || null);
-       setUserName(u?.user_metadata?.full_name || u?.email || 'User');
-       setAvatarUrl(u?.user_metadata?.avatar_url || null);
-     };
-     supabase.auth.getUser().then(({ data }) => { applyUser(data.user); });
-     const fetchCounts = async () => {
-       const { data, error } = await supabase.from('toys').select('status');
-       if (error) { setToyCounts({ total: 0, out: 0, in: 0 }); return; }
-       const arr = (data || []) as any[];
-       const total = arr.length;
-       const out = arr.filter(t => t.status === 'out').length;
-       const inCount = arr.filter(t => t.status === 'in').length;
-       setToyCounts({ total, out, in: inCount });
-     };
-     fetchCounts();
-     // 订阅登录态变化，刷新用户信息与计数，解决刷新后显示为空的问题
-     const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
-       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
-         applyUser(session?.user);
-         fetchCounts();
-       } else if (evt === 'SIGNED_OUT') {
-         applyUser(null);
-         setToyCounts({ total: 0, out: 0, in: 0 });
-       }
-     });
-     return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
+    supabase.auth.getUser().then(({ data }) => { applyUser(data.user); });
+    fetchCounts();
+    // 订阅登录态变化，刷新用户信息与计数，解决刷新后显示为空的问题
+    const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
+      if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
+        applyUser(session?.user);
+        fetchCounts();
+      } else if (evt === 'SIGNED_OUT') {
+        applyUser(null);
+        setToyCounts({ total: 0, out: 0, in: 0 });
+      }
+    });
+    return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
   }, []);
 
    const points = useMemo(() => {
@@ -74,7 +88,11 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
 
    return (
      <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-       <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
+       <ScrollView
+         style={[styles.container, { backgroundColor: 'transparent' }]}
+         contentContainerStyle={{ paddingBottom: 24 }}
+         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+       >
          <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
            <Card.Title
              title={userName || 'Me'}

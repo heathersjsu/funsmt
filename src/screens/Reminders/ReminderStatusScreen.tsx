@@ -13,6 +13,8 @@ import { IdleToySettings, runIdleScan } from '../../reminders/idleToy';
 import { cancelAllReminders, scheduleSmartTidying } from '../../utils/notifications';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
+import { loadLongPlaySettings, saveLongPlaySettings, loadIdleToySettings, saveIdleToySettings, loadTidyingSettings, saveTidyingSettings, TidyingSettings, syncLocalFromRemote } from '../../utils/reminderSettings';
+import type { Repeat } from '../../utils/reminderSettings';
 
 type Props = NativeStackScreenProps<any>;
 
@@ -31,12 +33,45 @@ export default function ReminderStatusScreen({}: Props) {
   const [scanTitle, setScanTitle] = useState<string>('Recent items');
   const openScan = async (source: 'longPlay' | 'idleToy' | 'smartTidying') => {
     try {
+      if (source === 'longPlay') {
+        // Real-time scan for toys currently playing and exceeding duration
+        const lp = await loadLongPlaySettings();
+        const { data: outToys } = await supabase
+          .from('toys')
+          .select('id,name,owner,status')
+          .eq('status', 'out');
+        const nowItems: NotificationHistoryItem[] = [];
+        for (const t of (outToys || []) as any[]) {
+          const tid = t.id as string;
+          const name = (t.name as string) || 'Toy';
+          const owner = (t.owner as string) || '';
+          const { data: sess } = await supabase
+            .from('play_sessions')
+            .select('scan_time')
+            .eq('toy_id', tid)
+            .order('scan_time', { ascending: false })
+            .limit(1);
+          const st = ((sess || [])[0]?.scan_time as string) || null;
+          if (!st) continue;
+          const mins = Math.floor((Date.now() - new Date(st).getTime()) / 60000);
+          if (mins >= lp.durationMin) {
+            const ownerLabel = owner ? `${owner}'s ` : '';
+            const body = `Friendly reminder: ${ownerLabel}${name} has been playing for ${mins} minutes (threshold ${lp.durationMin} minutes). Take a short break, drink some water, and rest your eyes.`;
+            nowItems.push({ id: `now_${tid}`, title: 'Long Play', body, timestamp: Date.now(), source: 'longplay' });
+          }
+        }
+        setScanTitle('Currently exceeding play threshold');
+        setScanItems(nowItems);
+        setScanDialogOpen(true);
+        return;
+      }
+      // Default: show recent history for idleToy and smartTidying
       const all = await getNotificationHistory();
       const items = (all || [])
-        .filter((i) => i.source === source)
+        .filter((i) => (i.source || '').toLowerCase().startsWith(source.toLowerCase()))
         .sort((a, b) => (b.timestamp - a.timestamp))
         .slice(0, 20);
-      const label = source === 'longPlay' ? 'Long Play — recent 20' : (source === 'idleToy' ? 'Idle Toy — recent 20' : 'Smart Tidy-up — recent 20');
+      const label = source === 'idleToy' ? 'Idle Toy — recent 20' : 'Smart Tidy-up — recent 20';
       setScanTitle(label);
       setScanItems(items);
       setScanDialogOpen(true);
@@ -49,12 +84,21 @@ export default function ReminderStatusScreen({}: Props) {
   const closeScan = () => setScanDialogOpen(false);
   const getToyNameFromBody = (body?: string) => {
     if (!body) return undefined;
+    const prefix = 'Friendly reminder: ';
+    const s = body.startsWith(prefix) ? body.slice(prefix.length) : body;
     // Long Play: "<Toy> has been played for <n> minutes"
-    let m = body.match(/^(.+?) has been played/i);
+    let m = s.match(/^(.+?) has been played/i);
     if (m && m[1]) return m[1];
     // Idle Toy: "<Toy> has been idle for <n> days" OR "<Toy> hasn't played with you for <n> days"
-    m = body.match(/^(.+?) (has been idle|hasn't played)/i);
+    m = s.match(/^(.+?) (has been idle|hasn't played)/i);
     if (m && m[1]) return m[1];
+    // Chinese Long Play historic format: "温馨提示：<owner?>的?<Toy>已连续玩 <n> 分钟..."
+    m = s.replace(/^温馨提示：/, '').match(/^(?:(.+?)的)?(.+?)已连续玩\s*(\d+)\s*分钟/i);
+    if (m) {
+      const owner = m[1];
+      const toy = m[2];
+      return toy?.trim();
+    }
     return undefined;
   };
   const formatTime = (ts: number) => {
@@ -68,40 +112,48 @@ export default function ReminderStatusScreen({}: Props) {
   const [lpInApp, setLpInApp] = useState<boolean>(true);
   const [lpInfo, setLpInfo] = useState<string>('');
 
-  const LP_KEY = 'reminder_longplay_settings';
-  async function loadLp(): Promise<LongPlaySettings> {
-    try { const raw = await SecureStore.getItemAsync(LP_KEY); if (raw) return JSON.parse(raw); } catch {}
-    return { enabled: false, durationMin: 45, methods: { push: true, inApp: true } };
-  }
-  async function saveLp(s: LongPlaySettings) { try { await SecureStore.setItemAsync(LP_KEY, JSON.stringify(s)); } catch {} }
+  async function loadLp(): Promise<LongPlaySettings> { return await loadLongPlaySettings(); }
+  async function saveLp(s: LongPlaySettings) { return await saveLongPlaySettings(s); }
 
   const onLpMinus = () => { const n = Math.max(1, parseInt(lpDurationMin, 10) - 5); setLpDurationMin(String(n)); };
   const onLpPlus = () => { const n = Math.min(360, parseInt(lpDurationMin, 10) + 5); setLpDurationMin(String(n)); };
   const onLpSave = async () => {
     const n = parseInt(lpDurationMin, 10);
     const s: LongPlaySettings = { enabled: lpEnabled, durationMin: isNaN(n) ? 45 : n, methods: { push: lpPush, inApp: lpInApp } };
-    await saveLp(s);
-    setLpInfo('Long Play Reminder settings saved.');
+    const res = await saveLp(s);
+    if (!res.remoteSaved) {
+      if (res.error === 'not_logged_in') {
+        setLpInfo('Saved locally. Please sign in to sync to cloud.');
+      } else {
+        setLpInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
+      }
+    } else {
+      setLpInfo('Long Play Reminder settings saved to cloud.');
+    }
     stopLongPlayMonitor();
     if (s.enabled) startLongPlayMonitor(s);
   };
 
   // ---- Idle Toy inline card state ----
-  const IT_KEY = 'reminder_idletoy_settings';
   const [itEnabled, setItEnabled] = useState(false);
   const [itDays, setItDays] = useState<string>('14');
   const [itSmartSuggest, setItSmartSuggest] = useState(true);
   const [itInfo, setItInfo] = useState('');
-  async function loadIt(): Promise<IdleToySettings> {
-    try { const raw = await SecureStore.getItemAsync(IT_KEY); if (raw) return JSON.parse(raw); } catch {}
-    return { enabled: false, days: 14, smartSuggest: true };
-  }
-  async function saveIt(s: IdleToySettings) { try { await SecureStore.setItemAsync(IT_KEY, JSON.stringify(s)); } catch {} }
+  async function loadIt(): Promise<IdleToySettings> { return await loadIdleToySettings(); }
+  async function saveIt(s: IdleToySettings) { return await saveIdleToySettings(s); }
   const onItSave = async () => {
     const n = parseInt(itDays, 10);
     const s: IdleToySettings = { enabled: itEnabled, days: isNaN(n) ? 14 : n, smartSuggest: itSmartSuggest };
-    await saveIt(s);
-    setItInfo('Idle Toy Reminder settings saved.');
+    const res = await saveIt(s);
+    if (!res.remoteSaved) {
+      if (res.error === 'not_logged_in') {
+        setItInfo('Saved locally. Please sign in to sync to cloud.');
+      } else {
+        setItInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
+      }
+    } else {
+      setItInfo('Idle Toy Reminder settings saved to cloud.');
+    }
   };
   const onItRunScan = async () => {
     const n = parseInt(itDays, 10);
@@ -110,20 +162,14 @@ export default function ReminderStatusScreen({}: Props) {
   };
 
   // ---- Smart Tidying inline card state ----
-  type Repeat = 'daily' | 'weekends' | 'weekdays';
-  type TidyingSettings = { enabled: boolean; time: string; repeat: Repeat; dndStart?: string; dndEnd?: string };
-  const ST_KEY = 'smart_tidying_settings';
   const [stEnabled, setStEnabled] = useState(false);
   const [stTime, setStTime] = useState('20:00');
   const [stRepeat, setStRepeat] = useState<Repeat>('daily');
   const [stDndStart, setStDndStart] = useState('22:00');
   const [stDndEnd, setStDndEnd] = useState('07:00');
   const [stInfo, setStInfo] = useState('');
-  async function loadSt(): Promise<TidyingSettings> {
-    try { const raw = await SecureStore.getItemAsync(ST_KEY); if (raw) return JSON.parse(raw); } catch {}
-    return { enabled: false, time: '20:00', repeat: 'daily', dndStart: '22:00', dndEnd: '07:00' };
-  }
-  async function saveSt(s: TidyingSettings) { try { await SecureStore.setItemAsync(ST_KEY, JSON.stringify(s)); } catch {} }
+  async function loadSt(): Promise<TidyingSettings> { return await loadTidyingSettings(); }
+  async function saveSt(s: TidyingSettings) { return await saveTidyingSettings(s); }
   function parseTime(str: string): { hour: number; minute: number } {
     const m = str.match(/^(\d{1,2}):(\d{2})$/);
     const h = m ? parseInt(m[1], 10) : 20; const min = m ? parseInt(m[2], 10) : 0;
@@ -139,8 +185,16 @@ export default function ReminderStatusScreen({}: Props) {
   }
   const onStSave = async () => {
     const s: TidyingSettings = { enabled: stEnabled, time: stTime, repeat: stRepeat, dndStart: stDndStart, dndEnd: stDndEnd };
-    await saveSt(s);
-    setStInfo('Smart tidy-up settings saved.');
+    const res = await saveSt(s);
+    if (!res.remoteSaved) {
+      if (res.error === 'not_logged_in') {
+        setStInfo('Saved locally. Please sign in to sync to cloud.');
+      } else {
+        setStInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
+      }
+    } else {
+      setStInfo('Smart tidy-up settings saved to cloud.');
+    }
     await cancelAllReminders();
     if (stEnabled) {
       const { hour, minute } = parseTime(stTime);
@@ -161,8 +215,9 @@ export default function ReminderStatusScreen({}: Props) {
 
   useEffect(() => {
     fetchTokens();
-    // load inline cards' persisted settings
+    // hydrate local settings from remote (if logged in), then load into UI
     (async () => {
+      try { await syncLocalFromRemote(); } catch {}
       const lp = await loadLp(); setLpEnabled(lp.enabled); setLpDurationMin(String(lp.durationMin)); setLpPush(lp.methods.push); setLpInApp(lp.methods.inApp);
       const it = await loadIt(); setItEnabled(it.enabled); setItDays(String(it.days)); setItSmartSuggest(it.smartSuggest);
       const st = await loadSt(); setStEnabled(st.enabled); setStTime(st.time); setStRepeat(st.repeat); setStDndStart(st.dndStart || ''); setStDndEnd(st.dndEnd || '');
@@ -321,12 +376,21 @@ export default function ReminderStatusScreen({}: Props) {
       <Portal>
         <Dialog visible={scanDialogOpen} onDismiss={closeScan} style={{ borderRadius: 10 }}>
           <Dialog.Title style={{ fontSize: 16 }}>{scanTitle}</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Content style={{ paddingHorizontal: 8 }}>
             <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ paddingVertical: 4 }}>
               {scanItems.length === 0 ? (
                 <Text>No records yet. Please enable the corresponding reminder and try again after actual usage.</Text>
               ) : (
                 scanItems.map((it) => {
+                  const src = (it.source || '').toLowerCase();
+                  if (src.startsWith('longplay')) {
+                    return (
+                      <View key={it.id} style={{ marginBottom: 8 }}>
+                        {it.body ? <Text style={{ fontSize: 14 }}>{it.body}</Text> : null}
+                        <Text style={{ opacity: 0.7, fontSize: 12, marginTop: 2 }}>{formatTime(it.timestamp)} · Long Play</Text>
+                      </View>
+                    );
+                  }
                   const toy = getToyNameFromBody(it.body);
                   const title = toy ? `${toy}` : (it.title || 'Reminder');
                   const desc = `${formatTime(it.timestamp)} · ${it.source || 'unknown'}` + (it.body ? `\n${it.body}` : '');

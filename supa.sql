@@ -144,6 +144,25 @@ begin
   end if;
 end $$;
 
+-- 5.2) 将 devices 加入 supabase_realtime publication（订阅设备在线/离线与心跳变化）
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public' and table_name = 'devices'
+  ) then
+    begin
+      execute 'alter publication supabase_realtime add table public.devices';
+    exception
+      when duplicate_object then
+        null;
+    end;
+  else
+    raise notice 'Table public.devices not found; skip publication add.';
+  end if;
+end $$;
+
 -- 6) 为 rfid_events 启用 RLS，并基于现有列自动选择读取策略：
 --    优先：按用户列归属（存在 user_id 列）-> 允许 auth.uid() = user_id
 --    其次：按设备归属（存在 device_id 列）-> 允许设备 owner 读取（devices.user_id = auth.uid()）
