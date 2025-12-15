@@ -30,7 +30,9 @@ export default function LoginScreen({ navigation }: Props) {
     <View style={[styles.container, { backgroundColor: theme.colors.background }] }>
       <View style={styles.header}>
         <Image source={logoUrl ? { uri: logoUrl } : require('../../../assets/icon.png')} style={styles.logo} />
-        <Text variant="headlineLarge" style={[styles.title, { color: theme.colors.primary }]}>Pinme Family Toy Organizer</Text>
+        {/* 标题缩小一倍并改为两行：ToyTidy 换行 Makes clean up fun! */}
+        <Text variant="titleMedium" style={[styles.titleMain, { color: theme.colors.primary }]}>ToyTidy</Text>
+        <Text variant="bodyMedium" style={[styles.titleSub, { color: theme.colors.primary }]}>Makes clean up fun!</Text>
       </View>
       <Card style={[styles.card, { backgroundColor: theme.colors.secondaryContainer }]}>
         <Card.Content>
@@ -47,12 +49,17 @@ export default function LoginScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, justifyContent: 'center', alignItems: 'center' /* bg moved to theme */ },
-  header: { alignItems: 'center', marginBottom: 16 },
-  logo: { width: 120, height: 120, marginBottom: 12 },
-  title: { fontWeight: 'bold', textAlign: 'center' /* color moved to theme */ },
-  card: { borderRadius: 18, width: '100%', maxWidth: 420 /* bg moved to theme */ },
-  input: { marginVertical: 8 },
-  button: { marginTop: 8, borderRadius: 14 },
+  // 整体上移：顶部对齐并减少顶部留白
+  // 整体下移，paddingTop 80
+  container: { flex: 1, paddingHorizontal: 16, paddingTop: 180, justifyContent: 'flex-start', alignItems: 'center' /* bg moved to theme */ },
+  header: { alignItems: 'center', marginBottom: 8, marginTop: 4 },
+  // 略缩小 Logo，让内容更靠上
+  logo: { width: 96, height: 96, marginBottom: 8 },
+  titleMain: { fontWeight: 'bold', textAlign: 'center', fontSize: 18 /* 缩小一倍近似值 */ },
+  titleSub: { textAlign: 'center', fontSize: 14, marginTop: 4 },
+  // 卡片紧随其后，减少与标题的间距
+  card: { borderRadius: 18, width: '100%', maxWidth: 420 /* bg moved to theme */, marginTop: 8 },
+  input: { marginVertical: 6 },
+  button: { marginTop: 6, borderRadius: 14 },
   error: { marginTop: 4 /* color moved to theme */ },
 });

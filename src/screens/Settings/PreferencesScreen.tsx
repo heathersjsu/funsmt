@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { Text, TextInput, Button, Card } from 'react-native-paper';
-import type { MD3LightTheme } from 'react-native-paper';
 import { buildKidTheme } from '../../theme';
 import { useThemeUpdate } from '../../theme/ThemeContext';
 

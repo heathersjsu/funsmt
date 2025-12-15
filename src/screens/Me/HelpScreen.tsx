@@ -1,13 +1,16 @@
 import React from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
 import { Text, Card, useTheme } from 'react-native-paper';
+import { LinearGradient } from 'expo-linear-gradient';
+import { cartoonGradient } from '../../theme/tokens';
 
 export default function HelpScreen() {
   const theme = useTheme();
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={{ paddingBottom: 24 }}>
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+    <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
+    <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}>
         <Card.Content>
           <Text variant="headlineSmall" style={{ marginBottom: 16, color: theme.colors.onSurface }}>
             How to Use PinMe
@@ -43,6 +46,7 @@ export default function HelpScreen() {
         </Card.Content>
       </Card>
     </ScrollView>
+    </LinearGradient>
   );
 }
 

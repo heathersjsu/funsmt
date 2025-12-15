@@ -2,10 +2,11 @@ import React, { useEffect, useState, useRef } from 'react';
 import { View, StyleSheet, Image, Platform, ScrollView, Pressable } from 'react-native';
 import { TextInput, Button, Text, HelperText, List, Menu, Chip, Portal, Dialog } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { supabase } from '../../supabaseClient';
 import { Toy } from '../../types';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { uploadToyPhoto, uploadToyPhotoWeb, BUCKET } from '../../utils/storage';
+import { uploadToyPhotoBestEffort, uploadToyPhotoWebBestEffort, uploadBase64PhotoBestEffort, BUCKET } from '../../utils/storage';
 import { setToyStatus } from '../../utils/playSessions';
 import { normalizeRfid, formatRfidDisplay } from '../../utils/rfid';
 import Constants from 'expo-constants';
@@ -41,7 +42,11 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(!!route.params?.showHistory);
-  const [historySessions, setHistorySessions] = useState<{ start: string; minutes: number }[]>([]);
+  const [historySessions, setHistorySessions] = useState<{ start: string; minutes?: number; end?: string | null; durationMin?: number | null }[]>([]);
+  // Keep base64 for native upload when asset URI is not readable (content://, ph://)
+  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
+  const [photoContentType, setPhotoContentType] = useState<string>('image/jpeg');
+  const [originalAssetUri, setOriginalAssetUri] = useState<string | null>(null);
   
   // Accordion panels
   const [basicOpen, setBasicOpen] = useState(true);
@@ -80,10 +85,45 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const pickImage = async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images });
+    // 动态兼容 expo-image-picker 新旧 API
+    const hasNew = !!(ImagePicker as any).MediaType && typeof (ImagePicker as any).MediaType.image !== 'undefined';
+    const mediaTypesParam: any = hasNew ? (ImagePicker as any).MediaType.image : (ImagePicker as any).MediaTypeOptions.Images;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: mediaTypesParam,
+      base64: true,
+      quality: 0.8,
+    });
     if (!result.canceled) {
       const asset = result.assets[0];
-      setPhotoUrl(asset.uri);
+      let finalUri = asset.uri;
+      let finalBase64 = asset.base64 || null;
+      let finalContentType = 'image/jpeg';
+      // On native, proactively compress to reduce upload size and avoid timeouts
+      if (Platform.OS !== 'web') {
+        try {
+          const manipulated = await ImageManipulator.manipulateAsync(
+            asset.uri,
+            [{ resize: { width: 1024 } }], // 更小的上限，减少体积
+            { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+          );
+          setOriginalAssetUri(asset.uri);
+          finalUri = manipulated.uri || asset.uri;
+          finalBase64 = manipulated.base64 || asset.base64 || null;
+          finalContentType = 'image/jpeg';
+        } catch (e) {
+          // If manipulation fails, fallback to original asset
+          finalBase64 = asset.base64 || null;
+          const isPng = (asset.uri || '').toLowerCase().endsWith('.png');
+          finalContentType = isPng ? 'image/png' : 'image/jpeg';
+        }
+      } else {
+        // Web: keep original asset
+        const isPng = (asset.uri || '').toLowerCase().endsWith('.png');
+        finalContentType = isPng ? 'image/png' : 'image/jpeg';
+      }
+      setPhotoUrl(finalUri);
+      setPhotoBase64(finalBase64);
+      setPhotoContentType(finalContentType);
       setDraggedFile(null);
     }
   };
@@ -113,7 +153,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         return;
       }
       // Native platforms: use NFC when available (Dev Client / production build)
-      const supportsNativeNfc = Platform.OS !== 'web' && (Constants.appOwnership !== 'expo');
+      const supportsNativeNfc = (Platform.OS as any) !== 'web' && (Constants.appOwnership !== 'expo');
       if (!supportsNativeNfc) {
         setError('Running in Expo Go; NFC scanning is unavailable. Please use Expo Dev Client or a production build.');
         return;
@@ -146,7 +186,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
 
   const loadSuggestions = async () => {
     // Fetch recent toys to build suggestions for location and owner
-    const { data } = await supabase.from('toys').select('location,owner').limit(100);
+  const { data } = await supabase.from('toys').select('location,owner').limit(100);
     const locs = Array.from(new Set((data || []).map(t => t.location).filter(Boolean))) as string[];
     const owners = Array.from(new Set((data || []).map(t => t.owner).filter(Boolean))) as string[];
     setLocSuggestions(locs);
@@ -181,17 +221,108 @@ export default function ToyFormScreen({ route, navigation }: Props) {
     };
     if (toy) {
       try {
-        if (photoUrl && photoUrl.startsWith('file:')) {
+        if (photoBase64) {
           const { data: userRes } = await supabase.auth.getUser();
           const uid = userRes?.user?.id;
           if (!uid) throw new Error('Not logged in');
-          const publicUrl = await uploadToyPhoto(photoUrl, uid);
-          payload.photo_url = publicUrl;
+          // Best-effort: try direct signed upload first, hedge to Edge Function if slow
+          const tryUpload = async (b64: string, ct: string) => uploadBase64PhotoBestEffort(b64, uid, ct);
+          const ct = photoContentType || 'image/jpeg';
+          try {
+            const publicUrl = await tryUpload(photoBase64, ct);
+            payload.photo_url = publicUrl;
+          } catch (e1: any) {
+            const msg1 = String(e1?.message || e1).toLowerCase();
+            if (msg1.includes('timed out')) {
+              const baseUri = originalAssetUri || photoUrl || '';
+              if (baseUri) {
+                try {
+                  const m1 = await ImageManipulator.manipulateAsync(
+                    baseUri,
+                    [{ resize: { width: 720 } }],
+                    { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                  );
+                  setPhotoUrl(m1.uri);
+                  setPhotoBase64(m1.base64 || null);
+                  const publicUrl = await tryUpload(m1.base64 || photoBase64, ct);
+                  payload.photo_url = publicUrl;
+                } catch (e2: any) {
+                  const msg2 = String(e2?.message || e2).toLowerCase();
+                  if (msg2.includes('timed out')) {
+                    const m2 = await ImageManipulator.manipulateAsync(
+                      baseUri,
+                      [{ resize: { width: 480 } }],
+                      { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+                    );
+                    setPhotoUrl(m2.uri);
+                    setPhotoBase64(m2.base64 || null);
+                    const publicUrl = await tryUpload(m2.base64 || photoBase64, ct);
+                    payload.photo_url = publicUrl;
+                  } else {
+                    throw e2;
+                  }
+                }
+              } else {
+                // 无法获取文件 URI，则直接重试一次原始 base64
+                const publicUrl = await tryUpload(photoBase64, ct);
+                payload.photo_url = publicUrl;
+              }
+            } else {
+              throw e1;
+            }
+          }
+        } else if (photoUrl && photoUrl.startsWith('file:')) {
+          const { data: userRes } = await supabase.auth.getUser();
+          const uid = userRes?.user?.id;
+          if (!uid) throw new Error('Not logged in');
+          // 对本地文件进行压缩后再上传（避免大图导致超时）
+          let localUri = photoUrl;
+          try {
+            const m0 = await ImageManipulator.manipulateAsync(
+              photoUrl,
+              [{ resize: { width: 1024 } }],
+              { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+            );
+            localUri = m0.uri || photoUrl;
+          } catch {}
+          try {
+            const publicUrl = await uploadToyPhotoBestEffort(localUri, uid);
+            payload.photo_url = publicUrl;
+          } catch (e1: any) {
+            const msg1 = String(e1?.message || e1).toLowerCase();
+            if (msg1.includes('timed out')) {
+              try {
+                const m1 = await ImageManipulator.manipulateAsync(
+                  localUri,
+                  [{ resize: { width: 720 } }],
+                  { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG }
+                );
+                const publicUrl = await uploadToyPhotoBestEffort(m1.uri || localUri, uid);
+                payload.photo_url = publicUrl;
+              } catch (e2: any) {
+                const msg2 = String(e2?.message || e2).toLowerCase();
+                if (msg2.includes('timed out')) {
+                  const m2 = await ImageManipulator.manipulateAsync(
+                    localUri,
+                    [{ resize: { width: 480 } }],
+                    { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG }
+                  );
+                  const publicUrl = await uploadToyPhotoBestEffort(m2.uri || localUri, uid);
+                  payload.photo_url = publicUrl;
+                } else {
+                  throw e2;
+                }
+              }
+            } else {
+              throw e1;
+            }
+          }
         } else if (Platform.OS === 'web' && draggedFile) {
           const { data: userRes } = await supabase.auth.getUser();
           const uid = userRes?.user?.id;
           if (!uid) throw new Error('Not logged in');
-          const publicUrl = await uploadToyPhotoWeb(draggedFile as any as Blob, uid);
+          // Best-effort web Blob upload
+          const publicUrl = await uploadToyPhotoWebBestEffort(draggedFile as any as Blob, uid);
           payload.photo_url = publicUrl;
         } else if (Platform.OS === 'web' && photoUrl && (photoUrl.startsWith('blob:') || photoUrl.startsWith('data:'))) {
           const { data: userRes } = await supabase.auth.getUser();
@@ -199,7 +330,8 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           if (!uid) throw new Error('Not logged in');
           const resp = await fetch(photoUrl);
           const blob = await resp.blob();
-          const publicUrl = await uploadToyPhotoWeb(blob, uid);
+          // Best-effort web data/blob URL upload
+          const publicUrl = await uploadToyPhotoWebBestEffort(blob, uid);
           payload.photo_url = publicUrl;
         }
         const { error } = await supabase.from('toys').update(payload).eq('id', toy.id);
@@ -218,16 +350,23 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         return;
       }
       try {
-        if (photoUrl && photoUrl.startsWith('file:')) {
-          const publicUrl = await uploadToyPhoto(photoUrl, uid);
+        if (photoBase64) {
+          // Best-effort base64 upload (native)
+          const publicUrl = await uploadBase64PhotoBestEffort(photoBase64, uid, photoContentType);
+          payload.photo_url = publicUrl;
+        } else if (photoUrl && photoUrl.startsWith('file:')) {
+          // Best-effort native file upload
+          const publicUrl = await uploadToyPhotoBestEffort(photoUrl, uid);
           payload.photo_url = publicUrl;
         } else if (Platform.OS === 'web' && draggedFile) {
-          const publicUrl = await uploadToyPhotoWeb(draggedFile as any as Blob, uid);
+          // Best-effort web Blob upload
+          const publicUrl = await uploadToyPhotoWebBestEffort(draggedFile as any as Blob, uid);
           payload.photo_url = publicUrl;
         } else if (Platform.OS === 'web' && photoUrl && (photoUrl.startsWith('blob:') || photoUrl.startsWith('data:'))) {
           const resp = await fetch(photoUrl);
           const blob = await resp.blob();
-          const publicUrl = await uploadToyPhotoWeb(blob, uid);
+          // Best-effort web data/blob URL upload
+          const publicUrl = await uploadToyPhotoWebBestEffort(blob, uid);
           payload.photo_url = publicUrl;
         }
         const { error } = await supabase.from('toys').insert({ ...payload, user_id: uid });
@@ -269,7 +408,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         const next = prev === 'out' ? 'in' : 'out';
         await supabase.from('toys').update({ status: next }).eq('id', toy.id);
         // Local UI sync
-        setToy((t) => (t ? { ...t, status: next } : t));
+        setStatus(next);
         if (next === 'out' && st) {
           setHistorySessions((prev) => [{ start: st, end: null, durationMin: null }, ...prev]);
         } else {
@@ -318,52 +457,69 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
       <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 16 }}>
-       <Text variant="titleLarge">{readOnly ? 'Toy Details' : 'Toy Form'}</Text>
+       {/* Title removed per request */}
       <List.Section>
         <List.Accordion title="Basic Info" expanded={basicOpen} onPress={() => setBasicOpen(!basicOpen)}>
           {readOnly ? (
             <>
               <List.Item title="Toy Name" description={name || '-'} />
-              <List.Item title="RFID Tag ID" description={formatRfidDisplay(rfid)} />
+              <List.Item title="Tag ID" description={formatRfidDisplay(rfid)} />
               <List.Item title="Category" description={category || '-'} />
               {(() => { const safeUri = getSafeImageUri(photoUrl || undefined); return safeUri ? (<Image source={{ uri: safeUri }} style={{ width: '100%', height: 200, marginVertical: 8, borderRadius: 12 }} />) : null; })()}
             </>
           ) : (
             <>
               <TextInput label="Toy Name" value={name} onChangeText={setName} style={styles.input} disabled={readOnly} />
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <TextInput label="RFID Tag ID" value={rfid} onChangeText={setRfid} style={[styles.input, { flex: 1 }]} disabled={readOnly} />
-                <Button style={{ marginLeft: 8 }} onPress={scanRfid} disabled={readOnly}>Scan</Button>
+              {/* Combine Tag ID and Category into one row */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View style={{ flex: 1, marginRight: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <TextInput
+                      label="Tag ID"
+                      value={rfid}
+                      onChangeText={setRfid}
+                      style={[styles.input, { flex: 1 }]}
+                      contentStyle={{ fontSize: 12, lineHeight: 16, paddingVertical: 0 }}
+                      dense
+                      disabled={readOnly}
+                    />
+                    <Button style={{ marginLeft: 8 }} labelStyle={{ fontSize: 12 }} onPress={scanRfid} disabled={readOnly}>Scan</Button>
+                  </View>
+                </View>
+                <View style={{ flex: 1, marginLeft: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Menu
+                      visible={catMenuOpen}
+                      onDismiss={() => setCatMenuOpen(false)}
+                      anchor={
+                        <Pressable onPress={() => { if (!readOnly && !catLockRef.current) { catInputRef.current?.focus?.(); } }}>
+                          <TextInput
+                            label="Category"
+                            value={category}
+                            onChangeText={setCategory}
+                            onFocus={() => { if (!catLockRef.current) setCatMenuOpen(true); }}
+                            ref={catInputRef}
+                            style={[styles.input, { flex: 1 }]}
+                            contentStyle={{ fontSize: 12, lineHeight: 16, paddingVertical: 0 }}
+                            dense
+                            disabled={readOnly}
+                          />
+                        </Pressable>
+                      }>
+                        {categories.map((c) => (
+                          <Menu.Item key={c} onPress={() => {
+                            setCategory(c);
+                            setCatMenuOpen(false);
+                            catInputRef.current?.blur?.();
+                            catLockRef.current = true;
+                            requestAnimationFrame(() => { setTimeout(() => { catLockRef.current = false; }, 150); });
+                          }} title={c} />
+                        ))}
+                      </Menu>
+                      <Button onPress={() => setAddCatOpen(true)} style={{ marginLeft: 8 }} labelStyle={{ fontSize: 12 }} disabled={readOnly}>Add</Button>
+                  </View>
+                </View>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                 <Menu
-                   visible={catMenuOpen}
-                   onDismiss={() => setCatMenuOpen(false)}
-                   anchor={
-                     <Pressable onPress={() => { if (!readOnly && !catLockRef.current) { catInputRef.current?.focus?.(); } }}>
-                       <TextInput
-                         label="Category"
-                         value={category}
-                         onChangeText={setCategory}
-                         onFocus={() => { if (!catLockRef.current) setCatMenuOpen(true); }}
-                         ref={catInputRef}
-                         style={[styles.input, { flex: 1 }]}
-                         disabled={readOnly}
-                       />
-                     </Pressable>
-                   }>
-                     {categories.map((c) => (
-                       <Menu.Item key={c} onPress={() => {
-                         setCategory(c);
-                         setCatMenuOpen(false);
-                         catInputRef.current?.blur?.();
-                         catLockRef.current = true;
-                         requestAnimationFrame(() => { setTimeout(() => { catLockRef.current = false; }, 150); });
-                       }} title={c} />
-                     ))}
-                   </Menu>
-                   <Button onPress={() => setAddCatOpen(true)} style={{ marginLeft: 8 }} disabled={readOnly}>Add category</Button>
-                 </View>
                 <View
                  // @ts-ignore - web-only drag events
                  onDragOver={(e) => { if (Platform.OS === 'web') { e.preventDefault(); setDragOver(true); } }}
@@ -390,66 +546,71 @@ export default function ToyFormScreen({ route, navigation }: Props) {
             </>
           ) : (
             <>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Menu
-                  visible={locMenuOpen}
-                  onDismiss={() => setLocMenuOpen(false)}
-                  anchor={
-                    <Pressable onPress={() => { if (!readOnly && !locLockRef.current) { locInputRef.current?.focus?.(); } }}>
-                      <TextInput
-                        label="Location"
-                        value={location}
-                        onChangeText={setLocation}
-                        onFocus={() => { if (!locLockRef.current) setLocMenuOpen(true); }}
-                        ref={locInputRef}
-                        style={[styles.input, { flex: 1 }]}
-                        disabled={readOnly}
-                      />
-                    </Pressable>
-                   }
-                   >
-                    {DEFAULT_LOCATIONS.map((loc) => (
-                       <Menu.Item key={`default-${loc}`} onPress={() => {
-                         setLocation(loc);
-                         setLocMenuOpen(false);
-                         locInputRef.current?.blur?.();
-                         locLockRef.current = true;
-                         requestAnimationFrame(() => { setTimeout(() => { locLockRef.current = false; }, 150); });
-                       }} title={loc} />
-                     ))}
-                     {locSuggestions.filter((s) => !DEFAULT_LOCATIONS.includes(s)).map((loc) => (
-                       <Menu.Item key={loc} onPress={() => {
-                         setLocation(loc);
-                         setLocMenuOpen(false);
-                         locInputRef.current?.blur?.();
-                         locLockRef.current = true;
-                         requestAnimationFrame(() => { setTimeout(() => { locLockRef.current = false; }, 150); });
-                       }} title={loc} />
-                     ))}
-                  </Menu>
-                  <Button onPress={() => setAddLocOpen(true)} style={{ marginLeft: 8 }} disabled={readOnly}>Add location</Button>
+              {/* Combine Location and Owner into one row */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View style={{ flex: 1, marginRight: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Menu
+                      visible={locMenuOpen}
+                      onDismiss={() => setLocMenuOpen(false)}
+                      anchor={
+                        <Pressable onPress={() => { if (!readOnly && !locLockRef.current) { locInputRef.current?.focus?.(); } }}>
+                          <TextInput
+                            label="Location"
+                            value={location}
+                            onChangeText={setLocation}
+                            onFocus={() => { if (!locLockRef.current) setLocMenuOpen(true); }}
+                            ref={locInputRef}
+                            style={[styles.input, { flex: 1 }]}
+                            contentStyle={{ fontSize: 12, lineHeight: 16, paddingVertical: 0 }}
+                            dense
+                            disabled={readOnly}
+                          />
+                        </Pressable>
+                      }
+                    >
+                      {DEFAULT_LOCATIONS.map((loc) => (
+                        <Menu.Item key={`default-${loc}`} onPress={() => {
+                          setLocation(loc);
+                          setLocMenuOpen(false);
+                          locInputRef.current?.blur?.();
+                          locLockRef.current = true;
+                          requestAnimationFrame(() => { setTimeout(() => { locLockRef.current = false; }, 150); });
+                        }} title={loc} />
+                      ))}
+                      {locSuggestions.filter((s) => !DEFAULT_LOCATIONS.includes(s)).map((loc) => (
+                        <Menu.Item key={loc} onPress={() => {
+                          setLocation(loc);
+                          setLocMenuOpen(false);
+                          locInputRef.current?.blur?.();
+                          locLockRef.current = true;
+                          requestAnimationFrame(() => { setTimeout(() => { locLockRef.current = false; }, 150); });
+                        }} title={loc} />
+                      ))}
+                    </Menu>
+                    <Button onPress={() => setAddLocOpen(true)} style={{ marginLeft: 8 }} labelStyle={{ fontSize: 12 }} disabled={readOnly}>Add</Button>
+                  </View>
                 </View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 8 }}>
-                  <Button mode="contained" onPress={async () => { setStatus('in'); if (toy?.id) await setToyStatus(toy.id, 'in'); }}>Set In Place</Button>
-                  <Button mode="contained" onPress={async () => { setStatus('out'); if (toy?.id) await setToyStatus(toy.id, 'out'); }} style={{ marginLeft: 8 }}>Set Playing</Button>
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Menu
-                    visible={ownerMenuOpen}
-                    onDismiss={() => setOwnerMenuOpen(false)}
-                    anchor={
-                      <Pressable onPress={() => { if (!readOnly && !ownerLockRef.current) { ownerInputRef.current?.focus?.(); } }}>
-                        <TextInput
-                          label="Owner"
-                          value={owner}
-                          onChangeText={setOwner}
-                          onFocus={() => { if (!ownerLockRef.current) setOwnerMenuOpen(true); }}
-                          ref={ownerInputRef}
-                          style={[styles.input, { flex: 1 }]}
-                          disabled={readOnly}
-                        />
-                      </Pressable>
-                     }>
+                <View style={{ flex: 1, marginLeft: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Menu
+                      visible={ownerMenuOpen}
+                      onDismiss={() => setOwnerMenuOpen(false)}
+                      anchor={
+                        <Pressable onPress={() => { if (!readOnly && !ownerLockRef.current) { ownerInputRef.current?.focus?.(); } }}>
+                          <TextInput
+                            label="Owner"
+                            value={owner}
+                            onChangeText={setOwner}
+                            onFocus={() => { if (!ownerLockRef.current) setOwnerMenuOpen(true); }}
+                            ref={ownerInputRef}
+                            style={[styles.input, { flex: 1 }]}
+                            contentStyle={{ fontSize: 12, lineHeight: 16, paddingVertical: 0 }}
+                            dense
+                            disabled={readOnly}
+                          />
+                        </Pressable>
+                      }>
                       {ownerSuggestions.map((o) => (
                         <Menu.Item key={o} onPress={() => {
                           setOwner(o);
@@ -460,10 +621,18 @@ export default function ToyFormScreen({ route, navigation }: Props) {
                         }} title={o} />
                       ))}
                     </Menu>
-                    <Button onPress={() => setAddOwnerOpen(true)} style={{ marginLeft: 8 }} disabled={readOnly}>Add owner</Button>
+                    <Button onPress={() => setAddOwnerOpen(true)} style={{ marginLeft: 8 }} labelStyle={{ fontSize: 12 }} disabled={readOnly}>Add</Button>
                   </View>
-                  <TextInput label="Source (purchase info)" value={source} onChangeText={setSource} style={styles.input} disabled={readOnly} />
-                  <TextInput label="Notes" value={notes} onChangeText={setNotes} style={styles.input} multiline disabled={readOnly} />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 8 }}>
+                <Button mode="contained" onPress={async () => { setStatus('in'); if (toy?.id) await setToyStatus(toy.id, 'in'); }}>Set In Place</Button>
+                <Button mode="contained" onPress={async () => { setStatus('out'); if (toy?.id) await setToyStatus(toy.id, 'out'); }} style={{ marginLeft: 8 }}>Set Playing</Button>
+              </View>
+
+              <TextInput label="Source (purchase info)" value={source} onChangeText={setSource} style={styles.input} disabled={readOnly} />
+              <TextInput label="Notes" value={notes} onChangeText={setNotes} style={styles.input} multiline disabled={readOnly} />
             </>
           )}
         </List.Accordion>

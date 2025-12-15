@@ -1,8 +1,8 @@
 import React, { createContext, useContext } from 'react';
-import type { MD3LightTheme } from 'react-native-paper';
+import type { MD3Theme } from 'react-native-paper';
 
 type ThemeUpdateContextType = {
-  setTheme: (t: MD3LightTheme) => void;
+  setTheme: (t: MD3Theme) => void;
 };
 
 const ThemeUpdateContext = createContext<ThemeUpdateContextType>({ setTheme: () => {} });

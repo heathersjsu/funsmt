@@ -3,6 +3,12 @@
 
 export const cartoonGradient = ["#FFF4D6", "#FFE5EC", "#EDE7FF"] as const;
 
+// Light purple fill color for flat inputs on provisioning screens
+export const softPurpleFill = "#F3E8FF"; // gentle lavender background
+
+// Orange gradient for primary call-to-action (Save) capsule button
+export const orangeCapsuleGradient = ["#FFB86C", "#FF8A00"] as const;
+
 // Status icon colors (temporary constants). TODO: map to theme when MD3 exposes custom slots.
 export const statusColors = {
   online: '#4CAF50',

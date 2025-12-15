@@ -1,0 +1,339 @@
+=== Web Page: index.html ===
+<!--
+  Simple setup page for ESP32 device, matching the screenshot layout.
+  Features:
+  - Device Name, Location inputs
+  - Scan Device ID (GET /id)
+  - Scan Wi-Fi (GET /wifi/scan)
+  - Save (POST /config)
+  How to use:
+  1) Open this file in a browser (double-click index.html after you save it from this text).
+  2) Ensure your ESP32 is powered and reachable (default host: http://esp32.local).
+  3) Click Scan to read Device ID, Scan Wi-Fi to list nearby SSIDs, fill fields, then Save.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Device Setup</title>
+    <style>
+      :root { --primary: #ff6b9d; --surface: #fff; --surface-variant: #eee; --text: #333; }
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background: linear-gradient(180deg,#ffeaf2,#fdf6e9); }
+      .container { max-width: 420px; margin: 24px auto; padding: 0 16px; }
+      .card { background: var(--surface); border-radius: 20px; border: 2px solid var(--surface-variant); padding: 16px; box-shadow: 0 6px 12px rgba(0,0,0,0.06); }
+      .title { color: var(--primary); font-weight: 700; text-align: center; margin-bottom: 8px; }
+      .subtitle { color: var(--text); opacity: .8; text-align: center; margin-bottom: 16px; }
+      label { display: block; font-weight: 600; color: #6a6a6a; margin: 12px 0 6px; }
+      input, select { width: 100%; padding: 12px; border-radius: 12px; border: 2px solid var(--surface-variant); outline: none; box-sizing: border-box; }
+      .row { display: flex; gap: 12px; align-items: center; }
+      .row > .grow { flex: 1; }
+      .btn { display: inline-block; padding: 10px 16px; border-radius: 24px; border: 2px solid var(--surface-variant); background: #fff; color: var(--primary); font-weight: 700; cursor: pointer; }
+      .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+      .actions { display: flex; justify-content: center; margin-top: 16px; }
+      .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #323232; color: #fff; padding: 10px 14px; border-radius: 12px; opacity: 0; transition: opacity .2s; }
+      .toast.show { opacity: 1; }
+      .footer { text-align: center; color: #777; font-size: 12px; margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <div class="title">Device Setup</div>
+        <div class="subtitle">Power on the device and keep it close to your phone.</div>
+
+        <label>ESP32 Host</label>
+        <input id="host" value="http://esp32.local" placeholder="http://esp32.local or http://192.168.x.x" />
+
+        <label>Device Name</label>
+        <input id="name" placeholder="e.g., Living Room Reader" />
+
+        <label>Location</label>
+        <input id="location" placeholder="e.g., Living Room" />
+
+        <div class="row">
+          <div class="grow">
+            <label>Device ID</label>
+            <input id="deviceId" placeholder="Unknown" />
+          </div>
+          <div>
+            <button class="btn" id="btnScanId">Scan</button>
+          </div>
+        </div>
+
+        <label>Wi‑Fi</label>
+        <div class="row">
+          <div class="grow">
+            <select id="ssid">
+              <option value="">— Select SSID —</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn" id="btnScanWifi">Scan Wi‑Fi</button>
+          </div>
+        </div>
+        <label>Wi‑Fi Password</label>
+        <input id="wifiPass" type="password" placeholder="Password" />
+
+        <div class="actions">
+          <button class="btn primary" id="btnSave">Save</button>
+        </div>
+      </div>
+      <div class="footer">© Device Setup</div>
+    </div>
+    <div id="toast" class="toast"></div>
+    <script>
+      const hostEl = document.getElementById('host');
+      const nameEl = document.getElementById('name');
+      const locEl = document.getElementById('location');
+      const idEl = document.getElementById('deviceId');
+      const ssidEl = document.getElementById('ssid');
+      const passEl = document.getElementById('wifiPass');
+      const toast = document.getElementById('toast');
+      const showToast = (msg) => { toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1600); };
+
+      const buildUrl = (path) => {
+        let base = hostEl.value.trim();
+        if (!/^https?:\/\//i.test(base)) base = 'http://' + base;
+        return base.replace(/\/$/, '') + path;
+      };
+
+      async function scanId() {
+        try {
+          const r = await fetch(buildUrl('/id'), { mode: 'cors' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const txt = await r.text();
+          idEl.value = txt.trim();
+          showToast('Device ID: ' + idEl.value);
+        } catch (e) {
+          showToast('Scan failed: ' + e.message);
+        }
+      }
+
+      async function scanWifi() {
+        try {
+          const r = await fetch(buildUrl('/wifi/scan'), { mode: 'cors' });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const json = await r.json();
+          const list = json.networks || json || [];
+          ssidEl.innerHTML = '<option value="">— Select SSID —</option>';
+          list.sort((a,b)=>b.rssi - a.rssi).forEach(n => {
+            const opt = document.createElement('option');
+            const enc = (n.enc || n.auth || '');
+            opt.value = n.ssid;
+            opt.textContent = `${n.ssid} (${n.rssi}dBm${enc?`, ${enc}`:''})`;
+            ssidEl.appendChild(opt);
+          });
+          showToast('Wi‑Fi scanned: ' + list.length);
+        } catch (e) {
+          showToast('Scan Wi‑Fi failed: ' + e.message);
+        }
+      }
+
+      async function save() {
+        const payload = {
+          device_name: nameEl.value.trim(),
+          location: locEl.value.trim(),
+          ssid: ssidEl.value,
+          password: passEl.value,
+          device_id: idEl.value.trim() || undefined,
+        };
+        if (!payload.device_name) { showToast('Please enter device name'); return; }
+        if (!payload.location) { showToast('Please enter location'); return; }
+        if (!payload.ssid) { showToast('Please select Wi‑Fi'); return; }
+        try {
+          const r = await fetch(buildUrl('/config'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            mode: 'cors'
+          });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const resp = await r.json().catch(()=>({ ok: true }));
+          showToast(resp.message || 'Saved');
+        } catch (e) {
+          showToast('Save failed: ' + e.message);
+        }
+      }
+
+      document.getElementById('btnScanId').addEventListener('click', scanId);
+      document.getElementById('btnScanWifi').addEventListener('click', scanWifi);
+      document.getElementById('btnSave').addEventListener('click', save);
+    </script>
+  </body>
+  </html>
+
+
+=== ESP32 (Arduino): device_setup.ino ===
+/*
+  ESP32 device setup server
+  - Serves endpoints:
+    GET /id           -> returns short device ID
+    GET /wifi/scan    -> returns JSON list of nearby networks
+    POST /config      -> accepts JSON {device_name, location, ssid, password, device_id?}
+  - Starts in AP mode (SSID: ESP32-Setup, pass: 12345678) for initial setup.
+  - mDNS host esp32.local so the web page can default to http://esp32.local
+
+  Dependencies: Arduino core for ESP32. No external libs required.
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
+
+Preferences prefs;
+WebServer server(80);
+
+const char* AP_SSID = "ESP32-Setup";
+const char* AP_PASS = "12345678"; // min 8 chars
+
+struct Config {
+  String deviceName;
+  String location;
+  String ssid;
+  String password;
+  String deviceId;
+};
+
+String shortIdFromMac() {
+  uint64_t mac = ESP.getEfuseMac();
+  uint32_t low = (uint32_t)(mac & 0xFFFFFFFF);
+  const char* alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  char buf[9]; buf[8] = '\0';
+  for (int i = 7; i >= 0; --i) { buf[i] = alphabet[low % 36]; low /= 36; }
+  return String(buf);
+}
+
+void sendCorsHeaders() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+void handleOptions() {
+  sendCorsHeaders();
+  server.send(204);
+}
+
+void handleId() {
+  sendCorsHeaders();
+  server.send(200, "text/plain", shortIdFromMac());
+}
+
+void handleWifiScan() {
+  sendCorsHeaders();
+  int n = WiFi.scanNetworks();
+  String json = "{"; json += "\"networks\":"; json += "[";
+  for (int i = 0; i < n; ++i) {
+    if (i) json += ",";
+    json += "{";
+    json += "\"ssid\":\"" + String(WiFi.SSID(i)) + "\",";
+    json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+    wifi_auth_mode_t enc = WiFi.encryptionType(i);
+    String encStr;
+    switch (enc) {
+      case WIFI_AUTH_OPEN: encStr = "OPEN"; break;
+      case WIFI_AUTH_WEP: encStr = "WEP"; break;
+      case WIFI_AUTH_WPA_PSK: encStr = "WPA"; break;
+      case WIFI_AUTH_WPA2_PSK: encStr = "WPA2"; break;
+      case WIFI_AUTH_WPA_WPA2_PSK: encStr = "WPA/WPA2"; break;
+      case WIFI_AUTH_WPA2_ENTERPRISE: encStr = "WPA2-ENT"; break;
+      case WIFI_AUTH_WPA3_PSK: encStr = "WPA3"; break;
+      case WIFI_AUTH_WPA2_WPA3_PSK: encStr = "WPA2/WPA3"; break;
+      default: encStr = "UNKNOWN"; break;
+    }
+    json += "\"enc\":\"" + encStr + "\"";
+    json += "}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
+}
+
+String readRequestBody() {
+  String body;
+  if (server.hasArg("plain")) body = server.arg("plain");
+  return body;
+}
+
+void handleConfig() {
+  sendCorsHeaders();
+  String body = readRequestBody();
+  // Very simple JSON extraction (expects keys to be present and quoted)
+  auto getVal = [&](const char* key) -> String {
+    String k = String("\"") + key + "\":";
+    int p = body.indexOf(k);
+    if (p < 0) return String("");
+    p += k.length();
+    // skip spaces and optional quotes
+    while (p < body.length() && (body[p] == ' ')) p++;
+    bool quoted = (p < body.length() && body[p] == '"');
+    if (quoted) p++;
+    int q = quoted ? body.indexOf('"', p) : body.indexOf(',', p);
+    if (q < 0) q = body.indexOf('}', p);
+    return body.substring(p, q);
+  };
+  Config cfg;
+  cfg.deviceName = getVal("device_name");
+  cfg.location   = getVal("location");
+  cfg.ssid       = getVal("ssid");
+  cfg.password   = getVal("password");
+  cfg.deviceId   = getVal("device_id");
+
+  if (cfg.deviceId.length() == 0) cfg.deviceId = shortIdFromMac();
+
+  prefs.begin("device", false);
+  prefs.putString("name", cfg.deviceName);
+  prefs.putString("loc", cfg.location);
+  prefs.putString("ssid", cfg.ssid);
+  prefs.putString("pass", cfg.password);
+  prefs.putString("id", cfg.deviceId);
+  prefs.end();
+
+  // Try to connect to Wi‑Fi in background (non-blocking response)
+  if (cfg.ssid.length()) {
+    WiFi.mode(WIFI_MODE_APSTA); // AP stays for continued access
+    WiFi.begin(cfg.ssid.c_str(), cfg.password.c_str());
+  }
+
+  String resp = String("{") +
+    "\"ok\":true," +
+    "\"message\":\"Saved\"," +
+    "\"device_id\":\"" + cfg.deviceId + "\"" +
+  "}";
+  server.send(200, "application/json", resp);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.print("AP IP: "); Serial.println(apIP);
+
+  if (MDNS.begin("esp32")) {
+    Serial.println("mDNS responder started: http://esp32.local");
+  } else {
+    Serial.println("mDNS start failed");
+  }
+
+  server.on("/id", HTTP_GET, handleId);
+  server.on("/wifi/scan", HTTP_GET, handleWifiScan);
+  server.on("/config", HTTP_OPTIONS, handleOptions);
+  server.on("/config", HTTP_POST, handleConfig);
+  server.onNotFound([](){ sendCorsHeaders(); server.send(404, "text/plain", "Not found"); });
+  server.begin();
+}
+
+void loop() {
+  server.handleClient();
+}
+
+/*
+Build notes:
+1) Board: ESP32 Dev Module (Arduino IDE or PlatformIO)
+2) After flashing, connect to AP: ESP32-Setup / 12345678.
+3) Open web page and set host to http://192.168.4.1 or http://esp32.local
+4) Scan Device ID, Scan Wi‑Fi, fill name/location/SSID/password, then Save.
+5) Device will attempt STA connection while keeping AP for continued access.
+*/
