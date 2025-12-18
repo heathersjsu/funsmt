@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, Platform } from 'react-native';
 import { Text, Card, List, Button, Avatar, Divider, useTheme } from 'react-native-paper';
 import { supabase, STORAGE_KEY } from '../../supabaseClient';
+import { pushLog } from '../../utils/envDiagnostics';
 import * as SecureStore from 'expo-secure-store';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -24,16 +25,45 @@ import { Chip } from 'react-native-paper';
     setEmail(u?.email || null);
     setUserName(u?.user_metadata?.full_name || u?.email || 'User');
     setAvatarUrl(u?.user_metadata?.avatar_url || null);
+    try {
+      if (!u?.id) pushLog('Me: getUser returned no user (web session missing)');
+      else pushLog(`Me: user id=${u.id} email=${u.email || 'n/a'}`);
+    } catch {}
   };
 
   const fetchCounts = async () => {
-    const { data, error } = await supabase.from('toys').select('status');
-    if (error) { setToyCounts({ total: 0, out: 0, in: 0 }); return; }
-    const arr = (data || []) as any[];
-    const total = arr.length;
-    const out = arr.filter(t => t.status === 'out').length;
-    const inCount = arr.filter(t => t.status === 'in').length;
-    setToyCounts({ total, out, in: inCount });
+    try {
+      const { data, error } = await supabase.from('toys').select('status');
+      if (error) throw error;
+      const arr = (data || []) as any[];
+      const total = arr.length;
+      const out = arr.filter(t => t.status === 'out').length;
+      const inCount = arr.filter(t => t.status === 'in').length;
+      setToyCounts({ total, out, in: inCount });
+      try { pushLog(`Me: counts total=${total} out=${out}`); } catch {}
+    } catch (e: any) {
+      const msg = e?.message || 'Failed to load counts';
+      try { pushLog(`Me: fetchCounts error ${msg}`); } catch {}
+      
+      // Fallback to cache
+      if (Platform.OS === 'web') {
+        try {
+          const raw = localStorage.getItem('pinme_stats_toys');
+          if (raw) {
+            const cached = JSON.parse(raw);
+            if (Array.isArray(cached) && cached.length > 0) {
+              const total = cached.length;
+              const out = cached.filter((t: any) => t.status === 'out').length;
+              const inCount = cached.filter((t: any) => t.status === 'in').length;
+              setToyCounts({ total, out, in: inCount });
+              try { pushLog(`Me: using cached counts total=${total}`); } catch {}
+              return;
+            }
+          }
+        } catch {}
+      }
+      setToyCounts({ total: 0, out: 0, in: 0 });
+    }
   };
 
   const [refreshing, setRefreshing] = useState(false);
@@ -60,6 +90,7 @@ import { Chip } from 'react-native-paper';
     })();
     // 订阅登录态变化，刷新用户信息与计数，解决刷新后显示为空的问题
     const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
+      try { pushLog(`Me: auth state change ${evt} session=${session ? 'yes' : 'no'}`); } catch {}
       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
         applyUser(session?.user);
         fetchCounts();
@@ -125,9 +156,9 @@ import { Chip } from 'react-native-paper';
          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
          style={{ flex: 1 }}
          contentContainerStyle={[
-           { paddingBottom: 40, paddingHorizontal: 16 },
-           isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
-         ]}
+          { paddingBottom: 40, paddingHorizontal: 16, paddingTop: 8 },
+          isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
+        ]}
        >
          {/* Header Profile Card */}
          <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0 }]}> 

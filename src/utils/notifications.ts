@@ -37,18 +37,37 @@ const webStorage: StorageLike = {
 
 const storage: StorageLike = Platform.OS === 'web' ? webStorage : SecureStore as unknown as StorageLike;
 
+// Simple mutex for history access to prevent race conditions
+let historyLock = Promise.resolve();
+
+async function withHistoryLock<T>(fn: () => Promise<T>): Promise<T> {
+  let release: () => void;
+  const newLock = new Promise<void>((resolve) => { release = resolve; });
+  // Wait for previous lock
+  const prevLock = historyLock;
+  historyLock = newLock;
+  await prevLock;
+  try {
+    return await fn();
+  } finally {
+    release!();
+  }
+}
+
 async function loadHistory(): Promise<NotificationHistoryItem[]> {
   try {
     const raw = await storage.getItemAsync(HISTORY_KEY);
     if (!raw) return [];
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr as NotificationHistoryItem[];
+    return JSON.parse(raw);
+  } catch {
     return [];
-  } catch { return []; }
+  }
 }
 
 async function saveHistory(items: NotificationHistoryItem[]) {
-  try { await storage.setItemAsync(HISTORY_KEY, JSON.stringify(items.slice(-200))); } catch {}
+  try {
+    await storage.setItemAsync(HISTORY_KEY, JSON.stringify(items));
+  } catch {}
 }
 
 async function getUnreadCountInternal(): Promise<number> {
@@ -63,34 +82,105 @@ async function setUnreadCountInternal(n: number) {
   try { await storage.setItemAsync(UNREAD_KEY, String(Math.max(0, n | 0))); } catch {}
 }
 
-export async function recordNotificationHistory(title: string, body: string | undefined, source?: string) {
-  const items = await loadHistory();
-  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  items.push({ id, title, body, timestamp: Date.now(), source });
-  await saveHistory(items);
-  // Increase unread counter for in-app badge
-  try {
-    const c = await getUnreadCountInternal();
-    await setUnreadCountInternal(c + 1);
-  } catch {}
-  // Also persist to Supabase when user is logged in and backend is configured
-  try {
-    const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id;
-    if (uid) {
-      await supabase.from('notification_history').insert({
-        user_id: uid,
-        title,
-        body,
-        source,
-        created_at: new Date().toISOString(),
-      });
+export function parseOwnerAndToy(body?: string): { owner?: string; toy?: string } {
+  if (!body) return {};
+  const s = body.trim();
+  let m = s.match(/^Friendly reminder:\s+(?:(.+?)'s\s+)?(.+?)\s+(?:has|hasn't|hasn’t)\b/i);
+  if (m) {
+    const owner = m[1] ? m[1].trim() : undefined;
+    const toy = m[2] ? m[2].trim() : undefined;
+    return { owner, toy };
+  }
+  m = s.replace(/^温馨提示：/, '').match(/^(?:(.+?)的)?(.+?)(?:已|还|已经)/);
+  if (m) {
+    const owner = m[1] ? m[1].trim() : undefined;
+    const toy = m[2] ? m[2].trim() : undefined;
+    return { owner, toy };
+  }
+  return {};
+}
+
+export async function recordNotificationHistory(title: string, body: string | undefined, source?: string, timestamp?: number) {
+  await withHistoryLock(async () => {
+    let items = await loadHistory();
+    // Filter invalid items before appending new one (clean up storage)
+    items = items.filter(it => {
+       const { owner, toy } = parseOwnerAndToy(it.body);
+       return !!(owner && toy);
+    });
+
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // Check for exact duplicates within last 3 minutes to avoid double recording
+    const now = timestamp || Date.now();
+    const dup = items.some(h => h.title === title && h.body === body && Math.abs(now - (h.timestamp || 0)) < 180000);
+    if (dup) {
+       // Even if duplicate, we should save if we filtered out some items
+       await saveHistory(items);
+       return;
     }
-  } catch {}
+
+    // Only add the new item if it is valid (has owner and toy)
+    // Exception: If the user specifically wants to enforce this rule for ALL notifications including new ones.
+    // The requirement says "Only keep notifications that contain ...".
+    // So if the new notification doesn't have owner/toy, we should NOT record it?
+    // "notification里 删除 ... 只保留 ... 都包含的通知"
+    // Yes, effectively we should not record it if it doesn't match.
+    // However, recordNotificationHistory is called for 'localDaily' which we know fails this check.
+    // If I block it here, localDaily notifications will never appear.
+    // Is that intended?
+    // "notification里 删除 最底下只有两个项目 时间.类型 的通知" -> "In notification [list/history], delete the ones at the bottom that only have Time.Type".
+    // "只保留 时间.类型.玩具名. owner 都包含的通知" -> "Only keep notifications that contain Time, Type, ToyName, Owner".
+    // This implies that notifications WITHOUT toy/owner are unwanted.
+    // So yes, I should prevent adding them too.
+    const { owner, toy } = parseOwnerAndToy(body);
+    if (owner && toy) {
+      items.push({ id, title, body, timestamp: now, source });
+    }
+
+    await saveHistory(items);
+    
+    // Update unread count
+    try {
+      const c = await getUnreadCountInternal();
+      await setUnreadCountInternal(c + 1);
+    } catch {}
+
+    // Sync to Supabase if logged in
+    try {
+      const { data: userRes } = await supabase.auth.getUser();
+      const uid = userRes?.user?.id;
+      if (uid) {
+        // Also check validity before syncing to Supabase?
+        // User asked to delete "actual stored data". Supabase is also storage.
+        // But maybe they meant local storage shown in the app.
+        // I will sync only if valid to be consistent.
+        if (owner && toy) {
+          await supabase.from('notification_history').insert({
+            user_id: uid,
+            title,
+            body,
+            source,
+            created_at: new Date(now).toISOString(),
+          });
+        }
+      }
+    } catch {}
+  });
 }
 
 export async function getNotificationHistory(): Promise<NotificationHistoryItem[]> {
-  return await loadHistory();
+  return await withHistoryLock(async () => {
+    let items = await loadHistory();
+    const originalCount = items.length;
+    items = items.filter(it => {
+       const { owner, toy } = parseOwnerAndToy(it.body);
+       return !!(owner && toy);
+    });
+    if (items.length !== originalCount) {
+      await saveHistory(items);
+    }
+    return items;
+  });
 }
 
 export async function clearNotificationHistory() {
@@ -171,6 +261,17 @@ export async function scheduleSmartTidying(title: string, body: string, hour: nu
   }
   const repeatLabel = repeat === 'daily' ? 'daily' : repeat === 'weekends' ? 'weekends' : 'weekdays';
   await recordNotificationHistory('Scheduled smart tidy-up', `At ${hour.toString().padStart(2,'0')}:${minute.toString().padStart(2,'0')} · ${repeatLabel}`, 'smartTidying');
+}
+
+export async function cancelNotificationsWithDataMatch(matcher: (data: any) => boolean) {
+  try {
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    for (const notif of scheduled) {
+      if (matcher(notif.content.data)) {
+        await Notifications.cancelScheduledNotificationAsync(notif.identifier);
+      }
+    }
+  } catch {}
 }
 
 // Ensure notification permission and Android channel (for Android 8+)

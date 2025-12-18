@@ -8,6 +8,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 type Props = { embedded?: boolean; refreshSignal?: number };
 
+import { pushLog } from '../../utils/envDiagnostics';
+
 export default function StatsScreen({ embedded = false, refreshSignal }: Props) {
   const [toys, setToys] = useState<Toy[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -47,9 +49,11 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
 
   const fetchData = async () => {
     setLoading(true);
+    pushLog('[Stats] fetchData start');
     try {
       const offline = Platform.OS === 'web' && typeof navigator !== 'undefined' && !(navigator as any).onLine;
       if (offline) {
+        pushLog('[Stats] Browser is offline');
         const cached = loadCache();
         if (cached && cached.length > 0) {
           setErrorMsg('Offline');
@@ -58,24 +62,31 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
           setErrorMsg('Offline');
           setToys([]);
         }
+        setLoading(false); // Fix: ensure loading is turned off
         return;
       }
       let success = false;
       let lastErr: string | null = null;
+      // Increased timeout attempts: 10s, 15s, 20s
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         try {
-          const res = await withTimeout(fetchToysOnce(), 5000 + attempt * 2000);
+          const timeoutMs = 10000 + attempt * 5000;
+          pushLog(`[Stats] Fetching toys attempt ${attempt + 1}, timeout=${timeoutMs}ms`);
+          const res = await withTimeout(fetchToysOnce(), timeoutMs);
           if ((res as any).error) {
             const err = (res as any).error;
             const msg = err?.message || '';
+            pushLog(`[Stats] Supabase error: ${msg}`);
             if (/permission|auth|jwt|token/i.test(msg)) {
-              try { await supabase.auth.refreshSession(); } catch {}
+              pushLog('[Stats] Auth error, refreshing session...');
+              try { await supabase.auth.refreshSession(); } catch (e:any) { pushLog(`[Stats] Refresh failed: ${e?.message}`); }
               continue;
             } else {
               lastErr = msg;
             }
           } else {
             const next = ((res as any).data as any[]) || [];
+            pushLog(`[Stats] Success, got ${next.length} toys`);
             setToys(next);
             saveCache(next);
             setErrorMsg(null);
@@ -83,10 +94,12 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
           }
         } catch (e: any) {
           lastErr = e?.message || 'Failed to load stats';
+          pushLog(`[Stats] Exception: ${lastErr}`);
         }
-        if (!success) await new Promise(r => setTimeout(r, 800));
+        if (!success) await new Promise(r => setTimeout(r, 1000));
       }
       if (!success) {
+        pushLog(`[Stats] All attempts failed. Last error: ${lastErr}`);
         const cached = loadCache();
         if (cached && cached.length > 0) {
           setErrorMsg(lastErr === 'Request timeout' ? 'Network timeout' : (lastErr || 'Failed to load stats'));
@@ -97,25 +110,56 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
         }
       }
     } finally {
+      pushLog('[Stats] fetchData finally');
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // Safety timeout to prevent infinite loading
+    const safetyTimer = setTimeout(() => {
+      setLoading(prev => {
+        if (prev) {
+          pushLog('[Stats] Safety timeout triggered - forcing loading false');
+          return false;
+        }
+        return prev;
+      });
+    }, 15000);
+
     fetchData();
     const cached = loadCache();
     if (cached && cached.length > 0) {
       setToys(cached);
       setLoading(false);
     }
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) {
-        fetchData();
-      } else {
+    
+    // Wrap getSession with timeout
+    const checkSession = async () => {
+      try {
+        const p = supabase.auth.getSession();
+        const timeout = new Promise<{ data: { session: any } }>((_, reject) => 
+          setTimeout(() => reject(new Error('Session check timeout')), 5000)
+        );
+        const { data } = await Promise.race([p, timeout]);
+        
+        if (data.session) {
+          pushLog('[Stats] Session found, refreshing data');
+          fetchData();
+        } else {
+          pushLog('[Stats] No session found');
+          setLoading(false);
+        }
+      } catch (e: any) {
+        pushLog(`[Stats] Session check error: ${e?.message}`);
         setLoading(false);
       }
-    });
+    };
+    
+    checkSession();
+
     const { data: sub } = supabase.auth.onAuthStateChange((evt) => {
+      pushLog(`[Stats] Auth event: ${evt}`);
       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
         fetchData();
       } else if (evt === 'SIGNED_OUT') {
@@ -123,7 +167,10 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
         setLoading(false);
       }
     });
-    return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
+    return () => { 
+      clearTimeout(safetyTimer);
+      try { sub?.subscription?.unsubscribe(); } catch {} 
+    };
   }, []);
 
   useEffect(() => {

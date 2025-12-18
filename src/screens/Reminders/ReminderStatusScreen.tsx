@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, ScrollView, Platform, TouchableOpacity, Animated } from 'react-native';
-import { Text, Card, Button, List, useTheme, Switch, TextInput, Checkbox, HelperText, Chip, Dialog, Portal, SegmentedButtons, Divider, Snackbar } from 'react-native-paper';
+import { Text, Card, Button, List, useTheme, Switch, TextInput, Checkbox, HelperText, Chip, Dialog, Portal, SegmentedButtons, Divider, Snackbar, Avatar } from 'react-native-paper';
 import * as SecureStore from 'expo-secure-store';
 import { getFunctionUrl, loadFigmaThemeOverrides, buildKidTheme } from '../../theme';
 import { useThemeUpdate } from '../../theme/ThemeContext';
@@ -15,10 +15,20 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
 import { loadLongPlaySettings, saveLongPlaySettings, loadIdleToySettings, saveIdleToySettings, loadTidyingSettings, saveTidyingSettings, TidyingSettings, syncLocalFromRemote } from '../../utils/reminderSettings';
 import type { Repeat } from '../../utils/reminderSettings';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 type Props = NativeStackScreenProps<any>;
 
 type DeviceToken = { id?: string; user_id: string; token: string };
+
+interface ScanToyItem {
+  id: string;
+  name: string;
+  photo_url?: string | null;
+  owner?: string | null;
+  location?: string | null;
+  durationLabel: string; // "XX min played" or "XX days idle"
+}
 
 export default function ReminderStatusScreen({}: Props) {
   const [tokens, setTokens] = useState<DeviceToken[]>([]);
@@ -47,88 +57,81 @@ export default function ReminderStatusScreen({}: Props) {
   // ---- Scan popup state ----
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const [scanItems, setScanItems] = useState<NotificationHistoryItem[]>([]);
+  const [scanToys, setScanToys] = useState<ScanToyItem[]>([]);
+  const [scanType, setScanType] = useState<'longPlay' | 'idleToy' | 'smartTidying'>('smartTidying');
   const [scanTitle, setScanTitle] = useState<string>('Recent items');
   const [scanMeta, setScanMeta] = useState<Record<string, { toy?: string; owner?: string }>>({});
+  
   const openScan = async (source: 'longPlay' | 'idleToy' | 'smartTidying') => {
+    setScanType(source);
     try {
       if (source === 'longPlay') {
-        // Real-time scan for toys currently playing and exceeding duration
         const lp = await loadLongPlaySettings();
-        const { data: outToys } = await supabase
-          .from('toys')
-          .select('id,name,owner,status')
-          .eq('status', 'out');
-        const nowItems: NotificationHistoryItem[] = [];
+        const { data: outToys } = await supabase.from('toys').select('id,name,photo_url,owner,location,status').eq('status', 'out');
+        const items: ScanToyItem[] = [];
+        const now = Date.now();
         for (const t of (outToys || []) as any[]) {
-          const tid = t.id as string;
-          const name = (t.name as string) || 'Toy';
-          const owner = (t.owner as string) || '';
-          const { data: sess } = await supabase
-            .from('play_sessions')
-            .select('scan_time')
-            .eq('toy_id', tid)
-            .order('scan_time', { ascending: false })
-            .limit(1);
-          const st = ((sess || [])[0]?.scan_time as string) || null;
-          if (!st) continue;
-          const mins = Math.floor((Date.now() - new Date(st).getTime()) / 60000);
-          if (mins >= lp.durationMin) {
-            const ownerLabel = owner ? `${owner}'s ` : '';
-            const body = `Friendly reminder: ${ownerLabel}${name} has been playing for ${mins} minutes (threshold ${lp.durationMin} minutes). Take a short break, drink some water, and rest your eyes.`;
-            nowItems.push({ id: `now_${tid}`, title: 'Long Play', body, timestamp: Date.now(), source: `longPlay:scan:${tid}:${mins}` });
+           const { data: sess } = await supabase.from('play_sessions').select('scan_time').eq('toy_id', t.id).order('scan_time', { ascending: false }).limit(1);
+           const st = ((sess || [])[0]?.scan_time as string) || null;
+           if (!st) continue;
+           const mins = Math.floor((now - new Date(st).getTime()) / 60000);
+           if (mins >= lp.durationMin) {
+             items.push({
+               id: t.id,
+               name: t.name || 'Toy',
+               photo_url: t.photo_url,
+               owner: t.owner,
+               location: t.location,
+               durationLabel: `${mins} min played`,
+            });
           }
-        }
+       }
+        setScanToys(items);
         setScanTitle('Currently exceeding play threshold');
-        setScanItems(nowItems);
-        // Also record into notification history for bell icon
-        try {
-          const history = await getNotificationHistory();
-          const nowTs = Date.now();
-          for (const it of nowItems) {
-            const dup = (history || []).some(h => h.title === it.title && h.body === it.body && Math.abs(nowTs - (h.timestamp || 0)) < 180000);
-            if (!dup) {
-              await recordNotificationHistory(it.title, it.body || '', it.source);
-            }
-          }
-        } catch {}
         setScanDialogOpen(true);
         return;
       }
-      // Default: show recent history for idleToy and smartTidying
+
+      if (source === 'idleToy') {
+        const it = await loadIdleToySettings();
+        const { data: inToys } = await supabase.from('toys').select('id,name,photo_url,owner,location,status,created_at').eq('status', 'in');
+        const items: ScanToyItem[] = [];
+        const now = Date.now();
+        for (const t of (inToys || []) as any[]) {
+           const { data: sess } = await supabase.from('play_sessions').select('scan_time').eq('toy_id', t.id).order('scan_time', { ascending: false }).limit(1);
+           const st = ((sess || [])[0]?.scan_time as string) || t.created_at; 
+           const lastTime = st ? new Date(st).getTime() : 0;
+           const days = lastTime > 0 ? Math.floor((now - lastTime) / (1000 * 60 * 60 * 24)) : 999;
+           if (days >= it.days) {
+             items.push({
+               id: t.id,
+               name: t.name || 'Toy',
+               photo_url: t.photo_url,
+               owner: t.owner,
+               location: t.location,
+               durationLabel: `${days} days idle`,
+            });
+          }
+       }
+        setScanToys(items);
+        setScanTitle('Currently idle toys');
+        setScanDialogOpen(true);
+        return;
+      }
+
+      // Default: show recent history for smartTidying
       const all = await getNotificationHistory();
       const items = (all || [])
         .filter((i) => (i.source || '').toLowerCase().startsWith(source.toLowerCase()))
         .sort((a, b) => (b.timestamp - a.timestamp))
         .slice(0, 20);
-      const label = source === 'idleToy' ? 'Idle Toy — recent 20' : 'Smart Tidy-up — recent 20';
-      // Build toy/owner meta from source when body parsing fails (mobile fallback)
-      const meta: Record<string, { toy?: string; owner?: string }> = {};
-      if (source === 'idleToy') {
-        try {
-          const toyIds = Array.from(new Set(items.map(it => {
-            const m = String(it.source || '').match(/idleToy:([a-z0-9-]+)/i);
-            return m ? m[1] : null;
-          }).filter(Boolean) as string[]));
-          if (toyIds.length) {
-            const { data: rows } = await supabase.from('toys').select('id,name,owner').in('id', toyIds as any);
-            const mapById: Record<string, { name?: string; owner?: string }> = {};
-            (rows || []).forEach((r: any) => { mapById[r.id] = { name: r.name, owner: r.owner }; });
-            items.forEach(it => {
-              const m = String(it.source || '').match(/idleToy:([a-z0-9-]+)/i);
-              const tid = m ? m[1] : null;
-              if (tid && mapById[tid]) {
-                meta[it.id] = { toy: mapById[tid].name, owner: mapById[tid].owner };
-              }
-            });
-          }
-        } catch {}
-      }
+      const label = 'Smart Tidy-up — recent 20';
       setScanTitle(label);
       setScanItems(items);
-      setScanMeta(meta);
       setScanDialogOpen(true);
     } catch {
       setScanItems([]);
+      setScanToys([]);
       setScanTitle('Recent items');
       setScanDialogOpen(true);
     }
@@ -254,7 +257,11 @@ export default function ReminderStatusScreen({}: Props) {
     return tt >= ss || tt < ee;
   }
   const onStSave = async () => {
-    const s: TidyingSettings = { enabled: stEnabled, time: stTime, repeat: stRepeat, dndStart: stDndStart, dndEnd: stDndEnd };
+    let repeatToSave = stRepeat;
+    if (stRepeat === 'custom') {
+      repeatToSave = stDays.map(d => d ? '1' : '0').join('');
+    }
+    const s: TidyingSettings = { enabled: stEnabled, time: stTime, repeat: repeatToSave, dndStart: stDndStart, dndEnd: stDndEnd };
     const res = await saveSt(s);
     setStInfo('');
     setSnackbarMsg('Smart tidy-up is saved');
@@ -284,10 +291,28 @@ export default function ReminderStatusScreen({}: Props) {
       try { await syncLocalFromRemote(); } catch {}
       const lp = await loadLp(); setLpEnabled(lp.enabled); setLpDurationMin(String(lp.durationMin)); setLpPush(lp.methods.push); setLpInApp(lp.methods.inApp);
       const it = await loadIt(); setItEnabled(it.enabled); setItDays(String(it.days)); setItSmartSuggest(it.smartSuggest);
-      const st = await loadSt(); setStEnabled(st.enabled); setStTime(st.time); setStRepeat(st.repeat); setStDndStart(st.dndStart || ''); setStDndEnd(st.dndEnd || '');
-      if (st.repeat === 'daily') setStDays([true,true,true,true,true,true,true]);
-      else if (st.repeat === 'weekdays') setStDays([false,true,true,true,true,true,false]);
-      else if (st.repeat === 'weekends') setStDays([true,false,false,false,false,false,true]);
+      const st = await loadSt(); 
+      setStEnabled(st.enabled); 
+      setStTime(st.time); 
+      setStDndStart(st.dndStart || ''); 
+      setStDndEnd(st.dndEnd || '');
+
+      if (st.repeat === 'daily') {
+        setStRepeat('daily');
+        setStDays([true,true,true,true,true,true,true]);
+      } else if (st.repeat === 'weekdays') {
+        setStRepeat('weekdays');
+        setStDays([false,true,true,true,true,true,false]);
+      } else if (st.repeat === 'weekends') {
+        setStRepeat('weekends');
+        setStDays([true,false,false,false,false,false,true]);
+      } else if (/^[01]{7}$/.test(st.repeat)) {
+        setStRepeat('custom');
+        setStDays(st.repeat.split('').map(c => c === '1'));
+      } else {
+        setStRepeat('daily');
+        setStDays([true,true,true,true,true,true,true]);
+      }
     })();
   }, []);
 
@@ -462,7 +487,7 @@ export default function ReminderStatusScreen({}: Props) {
                     const all = next.every(Boolean);
                     const wk = next.slice(1,6).every(Boolean) && !next[0] && !next[6];
                     const we = next[0] && next[6] && next.slice(1,6).every((v)=>!v);
-                    setStRepeat(all ? 'daily' : wk ? 'weekdays' : we ? 'weekends' : 'daily');
+                    setStRepeat(all ? 'daily' : wk ? 'weekdays' : we ? 'weekends' : 'custom');
                   }}
                   style={{
                     width: 32, height: 32, borderRadius: 16, borderWidth: 2,
@@ -521,7 +546,7 @@ export default function ReminderStatusScreen({}: Props) {
           {stInfo ? <HelperText type="info" style={{ fontFamily: headerFont, marginTop: 8 }}>{stInfo}</HelperText> : null}
         </Card.Content>
         <Card.Actions style={{ justifyContent: 'center' }}>
-          <Button mode="outlined" onPress={onStSave} style={{ borderRadius: 20, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Save</Button>
+          <Button mode="outlined" onPress={onStSave} style={{ borderRadius: 20, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Save Changes</Button>
         </Card.Actions>
       </Card>
 
@@ -535,7 +560,40 @@ export default function ReminderStatusScreen({}: Props) {
           <Dialog.Title style={{ fontSize: 16, fontFamily: headerFont }}>{scanTitle}</Dialog.Title>
           <Dialog.Content style={{ paddingHorizontal: 8 }}>
             <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ paddingVertical: 4 }}>
-              {scanItems.length === 0 ? (
+              {scanType !== 'smartTidying' && scanToys.length > 0 ? (
+                // Checklist style card list
+                scanToys.map(item => (
+                  <Card key={item.id} style={{ marginBottom: 12, backgroundColor: theme.colors.surface, borderRadius: 20 }}>
+                    <Card.Content>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        {item.photo_url ? (
+                          <Avatar.Image source={{ uri: item.photo_url }} size={48} style={{ marginRight: 12 }} />
+                        ) : (
+                          <Avatar.Icon icon="cube-outline" size={48} style={{ marginRight: 12, backgroundColor: theme.colors.secondaryContainer }} />
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontFamily: headerFont, fontSize: 16 }}>{item.name}</Text>
+                          {item.location && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                                <MaterialCommunityIcons name="map-marker" size={14} color={theme.colors.onSurfaceVariant} style={{ marginRight: 4 }} />
+                                <Text style={{ fontSize: 13, color: theme.colors.onSurfaceVariant }}>{item.location}</Text>
+                            </View>
+                          )}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                              <MaterialCommunityIcons name="clock-outline" size={14} color={theme.colors.onSurfaceVariant} style={{ marginRight: 4 }} />
+                              <Text style={{ fontSize: 13, color: theme.colors.onSurfaceVariant }}>{item.durationLabel}</Text>
+                          </View>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          {item.owner && <Text style={{ fontFamily: headerFont, fontSize: 16 }}>{item.owner}</Text>}
+                        </View>
+                      </View>
+                    </Card.Content>
+                  </Card>
+                ))
+              ) : scanType !== 'smartTidying' && scanToys.length === 0 ? (
+                <Text style={{ fontFamily: headerFont }}>No toys found matching the criteria.</Text>
+              ) : scanItems.length === 0 ? (
                 <Text style={{ fontFamily: headerFont }}>No records yet. Please enable the corresponding reminder and try again after actual usage.</Text>
               ) : (
                 scanItems.map((it) => {

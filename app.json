@@ -4,7 +4,7 @@
     "slug": "pinme",
     "version": "10.18.1",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/launcher-icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
     "splash": {
@@ -19,31 +19,18 @@
         "NSMicrophoneUsageDescription": "Used for voice command recognition to perform quick actions."
       }
     },
-  "android": {
-    "package": "com.pinme.app",
-    "versionCode": 101801,
-    "permissions": [
-      "CAMERA",
-      "INTERNET",
-      "NFC",
-      "RECORD_AUDIO",
-      "MODIFY_AUDIO_SETTINGS",
-      // BLE & Wi‑Fi related permissions
-      "BLUETOOTH",
-      "BLUETOOTH_ADMIN",
-      "BLUETOOTH_CONNECT",
-      "BLUETOOTH_SCAN",
-      "ACCESS_FINE_LOCATION",
-      "ACCESS_COARSE_LOCATION",
-      "NEARBY_WIFI_DEVICES",
-      "ACCESS_WIFI_STATE",
-      "CHANGE_WIFI_STATE"
-    ],
-    "adaptiveIcon": {
-      "foregroundImage": "./assets/adaptive-icon.png",
-      "backgroundColor": "#ffffff"
-    },
-      "edgeToEdgeEnabled": true
+    "android": {
+      "package": "com.pinme.app",
+      "versionCode": 101801,
+      "permissions": [
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/launcher-adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "predictiveBackGesture": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -70,6 +57,7 @@
         }
       ],
       "./plugins/withAndroidManifestFix",
+      "./plugins/withAndroidExclude",
       "react-native-ble-plx",
       "react-native-wifi-reborn"
     ],

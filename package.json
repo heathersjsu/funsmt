@@ -6,7 +6,7 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web",
+    "web": "expo start --web --port 8086",
     "test:chunk": "node tests/chunk.test.js"
   },
   "dependencies": {
@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "jimp": "^1.6.0",
     "prettier": "^3.6.2",
     "typescript": "~5.9.2"
   },
@@ -61,7 +62,6 @@
     "xml2js": "^0.6.2",
     "xmldom": "^0.8.10",
     "@expo/plist": "^0.0.15",
-    "@expo/config-plugins": "^8.0.0",
     "graphql": "^16.8.1"
   },
   "expo": {

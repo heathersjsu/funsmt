@@ -8,7 +8,7 @@ import { Toy } from '../../types';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { uploadToyPhotoBestEffort, uploadToyPhotoWebBestEffort, uploadBase64PhotoBestEffort, BUCKET } from '../../utils/storage';
-import { setToyStatus } from '../../utils/playSessions';
+import { setToyStatus, recordScan } from '../../utils/playSessions';
 import { normalizeRfid, formatRfidDisplay } from '../../utils/rfid';
 import Constants from 'expo-constants';
 import { LinearGradient } from 'expo-linear-gradient'
@@ -401,7 +401,15 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         }
         const { error } = await supabase.from('toys').update(payload).eq('id', toy.id);
         setLoading(false);
-        if (error) setError(error.message); else navigation.goBack();
+        if (error) {
+          setError(error.message);
+        } else {
+          // If status changed, record a scan event to ensure play history continuity
+          if (toy.status !== status) {
+            try { await recordScan(toy.id, new Date().toISOString()); } catch {}
+          }
+          navigation.goBack();
+        }
       } catch (e: any) {
         setLoading(false);
         setError(e?.message || 'Upload failed');

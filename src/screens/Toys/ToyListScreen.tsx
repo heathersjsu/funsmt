@@ -3,6 +3,7 @@ import { View, StyleSheet, FlatList, TouchableOpacity, ScrollView, Pressable, Re
 import { Image } from 'expo-image';
 import { Button, Chip, Card, Text, Menu, Searchbar, Banner, useTheme, List } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
+import { pushLog } from '../../utils/envDiagnostics';
 import { Toy } from '../../types';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
@@ -218,8 +219,35 @@ export default function ToyListScreen({ navigation }: Props) {
 
   const fetchToys = async () => {
     try {
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u?.user?.id || null;
+      console.log('fetchToys session uid:', uid);
+      if (!uid) {
+        try { pushLog('Toys: Web session uid missing; RLS will return empty. Waiting for INITIAL_SESSION/SIGNED_IN'); } catch {}
+        // Web fallback: load cached stats data to avoid empty page while session is establishing
+        if (Platform.OS === 'web') {
+          try {
+            const raw = (typeof window !== 'undefined') ? window.localStorage.getItem('pinme_stats_toys') : null;
+            if (raw) {
+              const cached = JSON.parse(raw || '[]');
+              if (Array.isArray(cached) && cached.length > 0) {
+                console.log('Using cached toys from stats:', cached.length);
+                try { pushLog(`Toys: using cached stats (${cached.length})`); } catch {}
+                setToys(cached as any[]);
+                setOwners(Array.from(new Set((cached || []).map((t: any) => t.owner).filter(Boolean))) as string[]);
+                setShowEmptyBanner(false);
+                setPageError('Showing cached data until session is ready');
+                return;
+              }
+            }
+          } catch {}
+        }
+        setPageError('Not signed in yet (web session). Waiting for session...');
+        setShowEmptyBanner(true);
+        return;
+      }
       console.log('fetchToys called with sort:', sort);
-      let q = supabase.from('toys').select('*');
+      let q = supabase.from('toys').select('id,name,status,category,owner,location,photo_url,updated_at,created_at,rfid');
       if (query) q = q.or(`name.ilike.%${query}%,location.ilike.%${query}%,owner.ilike.%${query}%`);
       if (categoryFilter) q = q.eq('category', categoryFilter);
       if (ownerFilter) q = q.eq('owner', ownerFilter);
@@ -265,13 +293,40 @@ export default function ToyListScreen({ navigation }: Props) {
       }
 
       console.log('Final sorted data length:', sortedData.length);
+      try { pushLog(`Toys: query ok, rows=${sortedData.length}`); } catch {}
       setToys(sortedData);
+      
+      // Update cache with fresh data (superset of stats cache)
+      if (Platform.OS === 'web') {
+        try { localStorage.setItem('pinme_stats_toys', JSON.stringify(sortedData)); } catch {}
+      }
+
       const uniqOwners = Array.from(new Set(sortedData.map((t) => t.owner).filter(Boolean))) as string[];
       setOwners(uniqOwners);
       setShowEmptyBanner(!(sortedData && sortedData.length));
       setPageError(null);
     } catch (e: any) {
       console.error('fetchToys error:', e?.message || e);
+      try { pushLog(`Toys: fetchToys error ${e?.message || e}`); } catch {}
+      
+      // Fallback to cache on error
+      if (Platform.OS === 'web') {
+        try {
+          const raw = (typeof window !== 'undefined') ? window.localStorage.getItem('pinme_stats_toys') : null;
+          if (raw) {
+            const cached = JSON.parse(raw || '[]');
+            if (Array.isArray(cached) && cached.length > 0) {
+              setToys(cached as any[]);
+              setOwners(Array.from(new Set((cached || []).map((t: any) => t.owner).filter(Boolean))) as string[]);
+              setShowEmptyBanner(false);
+              setPageError(`Network error (${e?.message || 'unknown'}). Showing cached data.`);
+              try { pushLog(`Toys: using cached stats due to error`); } catch {}
+              return;
+            }
+          }
+        } catch {}
+      }
+
       setToys([]);
       setOwners([]);
       setShowEmptyBanner(true);
@@ -389,7 +444,7 @@ export default function ToyListScreen({ navigation }: Props) {
           </View>
           <Card.Content style={{ flex: 1, padding: 12 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text numberOfLines={1} style={[styles.textTitle, { color: theme.colors.primary, flex: 1, marginRight: 8 }]}>{item.name}</Text>
+              <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.primary, fontWeight: 'bold', flex: 1, marginRight: 8 }]}>{item.name}</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                  <MaterialCommunityIcons name="account" size={14} color={theme.colors.onSurfaceVariant} style={{ marginRight: 2 }} />
                  <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.onSurfaceVariant, fontWeight: 'bold' }]}>{item.owner || 'Unknown'}</Text>

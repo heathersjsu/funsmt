@@ -6,6 +6,8 @@ import { supabase } from '../../supabaseClient';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
 import { BleManager } from '../../shims/ble';
+import EnvDiagnosticsBanner from '../../components/EnvDiagnosticsBanner';
+import { getLogs, clearLogs, pushLog } from '../../utils/envDiagnostics';
 
 export default function EnvironmentCheckScreen() {
   const theme = useTheme();
@@ -98,6 +100,7 @@ export default function EnvironmentCheckScreen() {
       // 统一加上前缀，便于在终端过滤
       console.log(`[EnvCheck] ${msg}`);
     } catch {}
+    try { pushLog(`EnvCheck: ${msg}`); } catch {}
     setStatus(prev => (msg + (prev ? '\n' + prev : '')));
   };
 
@@ -518,7 +521,21 @@ export default function EnvironmentCheckScreen() {
           isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
         ]}
       >
-        <View />
+        <EnvDiagnosticsBanner />
+        <Card style={{ borderRadius: 20, backgroundColor: theme.colors.surface, marginTop: 8 }}>
+          <Card.Title title="Web Logs" subtitle="Recent events across BLE/Provision/UI" titleStyle={{ fontFamily: headerFont }} />
+          <Card.Content>
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginBottom: 8 }}>
+              <Button mode="text" onPress={() => { try { const lines = getLogs(); setStatus(lines.join('\n')); } catch {} }} compact>Refresh</Button>
+              <Button mode="text" onPress={() => { try { clearLogs(); setStatus(''); } catch {} }} compact>Clear</Button>
+            </View>
+            <View style={{ maxHeight: 240, borderWidth: 1, borderColor: theme.colors.outlineVariant, borderRadius: 12, padding: 8 }}>
+              <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, lineHeight: 16 }}>
+                {status || 'No logs yet. Perform actions (Scan BLE, Wi‑Fi, Provision) and press Refresh to load logs.'}
+              </Text>
+            </View>
+          </Card.Content>
+        </Card>
       </ScrollView>
     </LinearGradient>
   );

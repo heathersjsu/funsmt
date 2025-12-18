@@ -14,7 +14,29 @@ export type EnvDiagResult = {
   toyCount: number | null;
   toysAccessible: boolean | null;
   problems: string[];
-};
+}
+
+export function pushLog(msg: string) {
+  try {
+    const g: any = globalThis as any;
+    const arr: string[] = Array.isArray(g.__pinmeLogs) ? g.__pinmeLogs : [];
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    arr.unshift(line);
+    g.__pinmeLogs = arr.slice(0, 500);
+  } catch {}
+}
+
+export function getLogs(): string[] {
+  try {
+    const g: any = globalThis as any;
+    const arr: string[] = Array.isArray(g.__pinmeLogs) ? g.__pinmeLogs : [];
+    return arr;
+  } catch { return []; }
+}
+
+export function clearLogs() {
+  try { (globalThis as any).__pinmeLogs = []; } catch {}
+}
 
 function resolveSupabaseUrl(): string {
   const u = (process.env.EXPO_PUBLIC_SUPABASE_URL as string | undefined)
@@ -90,6 +112,10 @@ export async function runEnvDiagnostics(): Promise<EnvDiagResult> {
   if (!sessionPresent) problems.push('无有效登录会话');
   if (sessionPresent && toysAccessible === false) problems.push('数据库访问失败或权限异常');
   if (sessionPresent && (toyCount === 0)) problems.push('当前账户没有任何玩具数据');
+  try {
+    pushLog(`EnvDiag: url=${url ? 'set' : 'missing'} projectRef=${ref || 'n/a'} storageKey=${storageOk ? 'ok' : 'missing'} session=${sessionPresent ? 'yes' : 'no'} uid=${sessionUserId || 'n/a'} email=${sessionEmail || 'n/a'} toysAccessible=${String(toysAccessible)} toyCount=${String(toyCount)}`);
+    if (problems.length > 0) pushLog(`EnvDiag problems: ${problems.join(' | ')}`);
+  } catch {}
   return {
     supabaseUrl: url,
     anonKeyPresent: !!anon,

@@ -5,7 +5,7 @@ import type { IdleToySettings as ITSettings } from '../reminders/idleToy';
 
 export type LongPlaySettings = LPSettings;
 export type IdleToySettings = ITSettings;
-export type Repeat = 'daily' | 'weekends' | 'weekdays';
+export type Repeat = 'daily' | 'weekends' | 'weekdays' | string;
 export type TidyingSettings = { enabled: boolean; time: string; repeat: Repeat; dndStart?: string; dndEnd?: string };
 
 const LP_KEY = 'reminder_longplay_settings';
@@ -37,7 +37,11 @@ function ensureITShape(parsed: any): IdleToySettings {
 }
 function ensureSTShape(parsed: any): TidyingSettings {
   const time = typeof parsed?.time === 'string' ? parsed.time : '20:00';
-  const repeat: Repeat = parsed?.repeat === 'weekends' || parsed?.repeat === 'weekdays' ? parsed.repeat : 'daily';
+  let repeat: Repeat = 'daily';
+  const r = parsed?.repeat;
+  if (r === 'weekends' || r === 'weekdays') repeat = r;
+  else if (typeof r === 'string' && /^[01]{7}$/.test(r)) repeat = r;
+
   return {
     enabled: !!parsed?.enabled,
     time,
@@ -159,7 +163,9 @@ export async function loadTidyingSettings(): Promise<TidyingSettings> {
     const enabled = (data as any).tidy_enabled ?? (data as any).tidying_enabled;
     const time = (data as any).tidy_time ?? (data as any).tidying_time;
     const repeatRaw = (data as any).tidy_repeat ?? (data as any).tidying_repeat;
-    const repeat: Repeat = (repeatRaw === 'weekends' || repeatRaw === 'weekdays') ? repeatRaw : 'daily';
+    let repeat: Repeat = 'daily';
+    if (repeatRaw === 'weekends' || repeatRaw === 'weekdays') repeat = repeatRaw;
+    else if (typeof repeatRaw === 'string' && /^[01]{7}$/.test(repeatRaw)) repeat = repeatRaw;
     const dndStart = (data as any).tidy_dnd_start ?? (data as any).tidying_dnd_start;
     const dndEnd = (data as any).tidy_dnd_end ?? (data as any).tidying_dnd_end;
     const remote: TidyingSettings = {

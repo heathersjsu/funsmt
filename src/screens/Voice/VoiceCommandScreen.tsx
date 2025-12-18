@@ -18,6 +18,7 @@ export default function VoiceCommandScreen() {
   const pendingErrorRef = useRef<string | null>(null);
   const showSnack = (msg: string) => { setSnackMsg(msg); setSnackVisible(true); };
 
+  const micAskedRef = useRef(false);
   const supportsNativeVoice = Platform.OS !== 'web' && (Constants.appOwnership !== 'expo');
   const getLang = (): string => {
     try {
@@ -51,8 +52,12 @@ export default function VoiceCommandScreen() {
         const perm = PermissionsAndroid.PERMISSIONS.RECORD_AUDIO;
         const has = await PermissionsAndroid.check(perm);
         if (has) return true;
-        const res = await PermissionsAndroid.request(perm);
-        return res === PermissionsAndroid.RESULTS.GRANTED;
+        if (!micAskedRef.current) {
+          const res = await PermissionsAndroid.request(perm);
+          micAskedRef.current = true;
+          return res === PermissionsAndroid.RESULTS.GRANTED;
+        }
+        return false;
       }
       return true;
     } catch {

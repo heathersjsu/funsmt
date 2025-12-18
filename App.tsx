@@ -19,10 +19,10 @@ import ReminderStatusScreen from './src/screens/Reminders/ReminderStatusScreen';
 import PreferencesScreen from './src/screens/Settings/PreferencesScreen';
 import AccountScreen from './src/screens/Account/AccountScreen';
 import HeaderAvatarMenu from './src/components/HeaderAvatarMenu';
-import DeviceConfigScreen from './src/screens/Devices/DeviceConfigScreen';
 import DeviceProvisioningScreen from './src/screens/Devices/DeviceProvisioningScreen';
 import AddDeviceUIScreen from './src/screens/Devices/AddDeviceUIScreen';
 import DeviceManagementScreen from './src/screens/Devices/DeviceManagementScreen';
+import DeviceEditScreen from './src/screens/Devices/DeviceEditScreen';
 import { useEffect, useState, useRef } from 'react';
 import { registerDevicePushToken, ensureNotificationPermissionAndChannel, recordNotificationHistory, getNotificationHistory } from './src/utils/notifications';
 import * as Notifications from 'expo-notifications';
@@ -43,7 +43,6 @@ import VoiceCommandScreen from './src/screens/Voice/VoiceCommandScreen';
 import { handleRfidEvent } from './src/utils/playSessions';
 import { useNotifications, NotificationsProvider } from './src/context/NotificationsContext';
 import Constants from 'expo-constants';
-import DeviceDetailScreen from './src/screens/Devices/DeviceDetailScreen';
 import LongPlaySettingsScreen from './src/screens/Reminders/LongPlaySettingsScreen';
 import IdleToySettingsScreen from './src/screens/Reminders/IdleToySettingsScreen';
 import SmartTidyingSettingsScreen from './src/screens/Tidying/SmartTidyingSettingsScreen';
@@ -204,8 +203,8 @@ function DevicesStackScreen() {
         }}
       />
       <DevicesStack.Screen name="DeviceProvisioning" component={DeviceProvisioningScreen} options={{ headerTitle: '' }} />
-      <DevicesStack.Screen name="DeviceConfig" component={DeviceConfigScreen} options={{ title: 'Device Config' }} />
-      <DevicesStack.Screen name="DeviceDetail" component={DeviceDetailScreen} options={{ title: 'Device Detail' }} />
+      <DevicesStack.Screen name="DeviceEdit" component={DeviceEditScreen} options={{ title: 'Edit Device' }} />
+      {/* DeviceDetail removed per user request */}
     </DevicesStack.Navigator>
   );
 }
@@ -349,9 +348,12 @@ function MainTabs() {
     return recog;
   };
 
+  const micAskedRef = useRef(false);
+  const micGestureActiveRef = useRef(false);
   const ensureMicPermission = async (): Promise<boolean> => {
     try {
       if (RNPlatform.OS === 'web') {
+        if (!micGestureActiveRef.current) return false;
         // eslint-disable-next-line no-restricted-globals
         const md = (navigator as any)?.mediaDevices;
         if (md?.getUserMedia) {
@@ -360,8 +362,15 @@ function MainTabs() {
         return true;
       }
       if (RNPlatform.OS === 'android') {
-        const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
-        return granted === PermissionsAndroid.RESULTS.GRANTED;
+        const perm = PermissionsAndroid.PERMISSIONS.RECORD_AUDIO;
+        const has = await PermissionsAndroid.check(perm);
+        if (has) return true;
+        if (!micAskedRef.current) {
+          const res = await PermissionsAndroid.request(perm);
+          micAskedRef.current = true;
+          return res === PermissionsAndroid.RESULTS.GRANTED;
+        }
+        return false;
       }
       return true;
     } catch {
@@ -405,7 +414,9 @@ function MainTabs() {
 
   const startVoiceListening = async (navigation: any) => {
     transcriptRef.current = '';
+    micGestureActiveRef.current = true;
     const permitted = await ensureMicPermission();
+    micGestureActiveRef.current = false;
     if (!permitted) {
       showSnack('Microphone permission denied');
       return;
@@ -456,6 +467,7 @@ function MainTabs() {
           tabBarInactiveTintColor: paperTheme.colors.onSurfaceVariant,
           tabBarStyle: { backgroundColor: paperTheme.colors.surface, height: 64, borderTopColor: paperTheme.colors.outline, borderTopWidth: 1 },
           tabBarLabelStyle: { fontSize: 12 },
+          lazy: true,
           tabBarIcon: ({ color, size }) => {
             const iconName =
               route.name === 'Home' ? 'home' :
@@ -599,26 +611,6 @@ export default function App() {
         head.appendChild(link);
       } catch {}
     }
-  }, []);
-  useEffect(() => {
-    (async () => {
-      try {
-        if (RNPlatform.OS !== 'ios') {
-          await (async () => {
-            try {
-              if ((RNPlatform as any).OS === 'web') {
-                const md = (navigator as any)?.mediaDevices;
-                if (md?.getUserMedia) {
-                  try { await md.getUserMedia({ audio: true }); } catch {}
-                }
-              } else {
-                await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
-              }
-            } catch {}
-          })();
-        }
-      } catch {}
-    })();
   }, []);
   useEffect(() => {
     (async () => {
@@ -774,26 +766,33 @@ export default function App() {
 
   // 将所有本地收到的通知写入历史，展示在首页右上角铃铛内
   useEffect(() => {
-    const sub = Notifications.addNotificationReceivedListener(async (event) => {
+    const handleNotification = async (title: string, body: string | undefined, date?: number) => {
       try {
-        const content: any = event?.request?.content || {};
-        const title: string = content?.title || 'Notification';
-        const body: string | undefined = content?.body;
         const t = (title || '').toLowerCase();
         const src =
           t.includes('long play') ? 'longPlay' :
           t.includes('idle toy') ? 'idleToy' :
           t.includes('tidy') || t.includes('tidy-up') ? 'smartTidying' :
           'unknown';
-        const history = await getNotificationHistory();
-        const now = Date.now();
-        const dup = (history || []).some(h => h.title === title && h.body === body && Math.abs(now - (h.timestamp || 0)) < 180000);
-        if (!dup) {
-          await recordNotificationHistory(title, body, src);
-        }
+        await recordNotificationHistory(title, body, src, date);
       } catch {}
+    };
+
+    const subReceived = Notifications.addNotificationReceivedListener(async (event) => {
+      const content: any = event?.request?.content || {};
+      await handleNotification(content?.title || 'Notification', content?.body);
     });
-    return () => { try { sub.remove(); } catch {} };
+
+    const subResponse = Notifications.addNotificationResponseReceivedListener(async (response) => {
+      const content: any = response?.notification?.request?.content || {};
+      const date = response?.notification?.date; // Time when notification was triggered
+      await handleNotification(content?.title || 'Notification', content?.body, date);
+    });
+
+    return () => {
+      try { subReceived.remove(); } catch {}
+      try { subResponse.remove(); } catch {}
+    };
   }, []);
 
   // 空闲玩具自动扫描：应用前台运行时每 6 小时执行一次，并在启动后立即执行一次

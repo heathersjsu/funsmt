@@ -9,6 +9,7 @@ import { discoverDevices } from '../../utils/zeroconf';
 import { supabase } from '../../supabaseClient';
 import { ensureBleDeps } from '../../shims/bleDeps';
 import { PERMISSIONS, RESULTS, check, request } from '../../shims/permissions';
+import { pushLog } from '../../utils/envDiagnostics';
 // Lazily import expo-camera to avoid initial load issues on web
 type BleDevice = { id: string; name: string };
 function randomId() {
@@ -22,19 +23,20 @@ function toDeviceId(id: string) {
   try {
     const s = String(id || '').trim();
     const stripped = s.replace(/^ESP32_/i, '');
+    const stripped2 = stripped.replace(/^pinme_/i, '');
     const m = /([A-Za-z0-9]{6})$/.exec(stripped);
-    const suffix = (m && m[1]) ? m[1].toUpperCase() : stripped.toUpperCase();
-    return `ESP32_${suffix.slice(-6)}`;
+    const suffix = (m && m[1]) ? m[1].toUpperCase() : stripped2.toUpperCase();
+    return `pinme_${suffix.slice(-6)}`;
   } catch {
-    return `ESP32_${randomId()}`;
+    return `pinme_${randomId()}`;
   }
 }
 // UI display helper: show UPPERCASE 6-char suffix
 function toDisplaySuffixFromDeviceId(id: string) {
-  try {
-    const norm = toDeviceId(id);
-    return norm.replace(/^ESP32_/i, '').slice(-6).toUpperCase();
-  } catch { return randomId().toUpperCase(); }
+  try {
+    const norm = toDeviceId(id);
+    return norm.replace(/^ESP32_/i, '').replace(/^pinme_/i, '').slice(-6).toUpperCase();
+  } catch { return randomId().toUpperCase(); }
 }
 // Try to parse a display suffix from a BLE name.
 // Rules:
@@ -128,8 +130,10 @@ export default function DeviceProvisioningScreen() {
   const [wifiItemsBle, setWifiItemsBle] = useState<Array<{ ssid: string; rssi: number; enc: string }>>([]);
   const [wifiBlePickerVisible, setWifiBlePickerVisible] = useState(false);
   const [selectedWifiEnc, setSelectedWifiEnc] = useState<string | null>(null);
-  const [lastWifiStatus, setLastWifiStatus] = useState<string | null>(null);
-  const [showPasswordInput, setShowPasswordInput] = useState(false);
+  const [lastWifiStatus, setLastWifiStatus] = useState<string | null>(null);
+  const [showPasswordInput, setShowPasswordInput] = useState(false);
+  const [permDialogVisible, setPermDialogVisible] = useState(false);
+  const [permDialogMsg, setPermDialogMsg] = useState('');
   // Align with ToyFormScreen: location dropdown suggestions
   const DEFAULT_LOCATIONS = ['Living room','Bedroom','Toy house','others'];
   const [locSuggestions, setLocSuggestions] = useState<string[]>([]);
@@ -356,12 +360,13 @@ export default function DeviceProvisioningScreen() {
       }
     } catch {}
   };
-  const debug = (msg: string) => {
-    try { console.log('[BLE][Provisioning]', msg); } catch {}
-    appendStatus(msg);
-    // Try to display debug text on the device screen asynchronously (if firmware supports any endpoint)
-    try { setTimeout(() => { postDebugToEsp32(msg); }, 0); } catch {}
-  };
+  const debug = (msg: string) => {
+    try { console.log('[BLE][Provisioning]', msg); } catch {}
+    appendStatus(msg);
+    // Try to display debug text on the device screen asynchronously (if firmware supports any endpoint)
+    try { setTimeout(() => { postDebugToEsp32(msg); }, 0); } catch {}
+    try { pushLog(`[Provision] ${msg}`); } catch {}
+  };
   const autoFillSsid = async () => {
     try {
       if (Platform.OS === 'web') return; // Web does not support reading SSID
@@ -398,23 +403,30 @@ export default function DeviceProvisioningScreen() {
   const ensureBlePermissions = async (): Promise<boolean> => {
     try {
       debug('Step[Perm] Check/request BLE scan/connect permissions');
+      appendStatus(`Platform=${Platform.OS} Version=${String(Platform.Version)}`);
       if (Platform.OS === 'android') {
         const isApi31Plus = (typeof Platform?.Version === 'number' ? Platform.Version >= 31 : true);
         if (isApi31Plus) {
           // Some devices on Android 12+ still require location permission to return BLE advertisements
           const locFineStatus = await check(PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION);
+          appendStatus(`ACCESS_FINE_LOCATION=${String(locFineStatus)}`);
           if (locFineStatus !== RESULTS.GRANTED) {
             const r = await request(PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION);
+            appendStatus(`ACCESS_FINE_LOCATION_req=${String(r)}`);
             if (r !== RESULTS.GRANTED) return false;
           }
           const scanStatus = await check(PERMISSIONS.ANDROID.BLUETOOTH_SCAN);
+          appendStatus(`BLUETOOTH_SCAN=${String(scanStatus)}`);
           if (scanStatus !== RESULTS.GRANTED) {
             const r = await request(PERMISSIONS.ANDROID.BLUETOOTH_SCAN);
+            appendStatus(`BLUETOOTH_SCAN_req=${String(r)}`);
             if (r !== RESULTS.GRANTED) return false;
           }
           const connStatus = await check(PERMISSIONS.ANDROID.BLUETOOTH_CONNECT);
+          appendStatus(`BLUETOOTH_CONNECT=${String(connStatus)}`);
           if (connStatus !== RESULTS.GRANTED) {
             const r = await request(PERMISSIONS.ANDROID.BLUETOOTH_CONNECT);
+            appendStatus(`BLUETOOTH_CONNECT_req=${String(r)}`);
             if (r !== RESULTS.GRANTED) return false;
           }
         } else {
@@ -422,6 +434,7 @@ export default function DeviceProvisioningScreen() {
           try {
             const loc = await import('expo-location');
             const { status } = await loc.Location.requestForegroundPermissionsAsync();
+            appendStatus(`Location_fg_perm=${String(status)}`);
             if (status !== 'granted') return false;
           } catch { return false; }
         }
@@ -668,6 +681,8 @@ const scanAndShowPinmeList = async () => {
   setSending(false);
   setStatus('');
   setScanLoading(true);
+  debug('UI[Scan] Scan button pressed');
+  setSnackbarMsg('Requesting Bluetooth permissions...'); setSnackbarVisible(true);
   if (!supportsNativeModules) {
     setScanLoading(false);
     setError('BLE scanning is not supported on Web. Please use the mobile app (Android/iOS Dev Client or release build) to provision the device.');
@@ -676,50 +691,84 @@ const scanAndShowPinmeList = async () => {
   // If there is an old scan, stop it first to avoid lag or unresponsive touch due to concurrent scans
   try { bleRef.current?.stopDeviceScan(); } catch {}
   const ok = await ensureBlePermissions();
-  if (!ok) { setError('Bluetooth/Location permissions not granted'); return; }
-    try {
-      const { BleManager } = await import('../../shims/ble');
-      const manager = bleRef.current || new BleManager();
-      bleRef.current = manager;
-      setPinmeList([]);
-      setPickerVisible(true);
-      debug('Step[Scan] Start scanning, collect only PINME-XXXXXX devices for selection');
-      const map = new Map<string, { id: string; name: string; rssi: number | null }>();
-      manager.startDeviceScan(null, { allowDuplicates: true }, (err: any, device: any) => {
-        if (err) { debug(`Step[Scan] Scan error: ${err?.message || err}`); return; }
-        const name: string = device?.name || device?.localName || '';
-        const id: string = device?.id || device?.uuid || '';
-        const rssi: number | null = typeof device?.rssi === 'number' ? device.rssi : null;
-        if (!id) return;
-        // Compatible with both "PINME-ESP32" and "PINMEXXXXXX" naming; collect any device whose name contains "pinme"
-        if (/pinme/i.test(name || '')) {
-          const prev = map.get(id);
-          // Normalize display name to PINME-XXXXXX (last six). If not parseable, show original device name.
-          const suffixFromName = parseDisplaySuffixFromName(name || '') || '';
-          const shownName = suffixFromName
-            ? `PINME-${suffixFromName}`
-            : ((name || 'ESP32 DEVICE').toUpperCase());
-          const item = { id, name: shownName, rssi };
-          if (!prev || ((rssi ?? -999) > (prev.rssi ?? -999))) map.set(id, item);
-          const list = Array.from(map.values()).sort((a,b) => ((b.rssi ?? -999) - (a.rssi ?? -999)));
-          // 仅保留最近的 3 个设备（按 RSSI 降序）
-          setPinmeList(list.slice(0, 3));
-          debug(`Step[Scan] Received PINME device: ${name} (${id})${rssi != null ? `, RSSI=${rssi}` : ''}`);
+  if (!ok) {
+    setScanLoading(false);
+    setPermDialogMsg('Bluetooth and Location permissions are required to scan nearby devices. Please grant permissions in system settings.');
+    setPermDialogVisible(true);
+    return;
+  }
+  debug('Step[Perm] Permissions granted for BLE scan');
+  try {
+    const { BleManager } = await import('../../shims/ble');
+    const manager = bleRef.current || new BleManager();
+    bleRef.current = manager;
+    setPinmeList([]);
+    setPickerVisible(true);
+    debug('Step[Scan] Start scanning, collect only PINME-XXXXXX devices for selection');
+    const map = new Map<string, { id: string; name: string; rssi: number | null }>();
+    manager.startDeviceScan(null, { allowDuplicates: true }, (err: any, device: any) => {
+      if (err) { debug(`Step[Scan] Scan error: ${err?.message || err}`); return; }
+      const name: string = device?.name || device?.localName || '';
+      const id: string = device?.id || device?.uuid || '';
+      const rssi: number | null = typeof device?.rssi === 'number' ? device.rssi : null;
+      if (!id) return;
+        // Accept ALL devices; prioritize PINME/ESP32/TOY by placing them earlier after sort
+        const looksPinme = /pinme/i.test(name || '');
+        const looksEsp32 = /esp32|toy/i.test(name || '');
+        const suffixFromName = parseDisplaySuffixFromName(name || '') || '';
+        let displayBase =
+          suffixFromName ? `pinme_${suffixFromName}` :
+          (name ? (name || '').toUpperCase() : 'ESP32 DEVICE');
+        // User request: Show pinme_ prefix in scan list instead of ESP32_
+        if (/^ESP32_/i.test(displayBase)) {
+          displayBase = displayBase.replace(/^ESP32_/i, 'pinme_');
         }
+        const prev = map.get(id);
+        const item = { id, name: displayBase, rssi };
+        if (!prev || ((rssi ?? -999) > (prev.rssi ?? -999))) map.set(id, item);
+        const list = Array.from(map.values()).sort((a,b) => {
+          const br = (b.rssi ?? -999) - (a.rssi ?? -999);
+          if (br !== 0) return br;
+          const ba = (/pinme|esp32|toy/i.test(b.name || '') ? 1 : 0) - (/pinme|esp32|toy/i.test(a.name || '') ? 1 : 0);
+          return ba;
+        });
+        // Keep top 8 by RSSI so the dialog has enough choices
+        setPinmeList(list.slice(0, 6));
+        debug(`Step[Scan] Device: ${name || '(no name)'} (${id})${rssi != null ? `, RSSI=${rssi}` : ''}`);
+        debug(`Step[Scan] Current list size=${list.length}`);
       });
-      // Auto-stop scan after 12s (if user hasn't selected yet)
-      setTimeout(() => { try { manager.stopDeviceScan(); } catch {} setScanLoading(false); }, 12000);
-    } catch (e:any) {
+    // Fallback: if still empty after 4s, try nearest auto-read to prefill Device ID
+    setTimeout(async () => {
+      if (pinmeList.length === 0) {
+        debug('Step[Scan] No devices in list after 4s; trying nearest auto-read to prefill Device ID');
+        try {
+          const idStr = await scanAndReadNearestDeviceId();
+          if (idStr) {
+            setDeviceId(toDeviceId(idStr));
+            setPickerVisible(false);
+            setScanLoading(false);
+            setSnackbarMsg('Device detected'); setSnackbarVisible(true);
+            debug(`Step[Scan] Fallback success, deviceId=${toDeviceId(idStr)}`);
+          }
+        } catch (e:any) {
+          debug(`Step[Scan] Fallback auto-read failed: ${e?.message || e}`);
+        }
+      }
+    }, 4000);
+    // Auto-stop scan after 15s (if user hasn't selected yet)
+    setTimeout(() => { try { manager.stopDeviceScan(); } catch {} setScanLoading(false); }, 15000);
+  } catch (e:any) {
     setError(`Scan failed: ${e?.message || String(e)}`);
-      setScanLoading(false);
-      debug(`Step[Scan] Scan failed: ${e?.message || e}`);
-    }
-  };
-  const closePicker = () => {
-    try { bleRef.current?.stopDeviceScan(); } catch {}
-    setPickerVisible(false);
-    setScanLoading(false);
-  };
+    setScanLoading(false);
+    debug(`Step[Scan] Scan failed: ${e?.message || e}`);
+  }
+};
+  const closePicker = () => {
+    try { bleRef.current?.stopDeviceScan(); } catch {}
+    setPickerVisible(false);
+    setScanLoading(false);
+    debug('UI[Scan] Picker closed by user');
+  };
   // Wi‑Fi scan permissions
   const ensureWifiPermissions = async (): Promise<boolean> => {
     try {
@@ -1157,7 +1206,9 @@ const scanAndShowPinmeList = async () => {
                   .maybeSingle();
                 if (data) {
                   // 与 Supabase devices.status 保持一致，不再基于 5 分钟 last_seen 阈值
-                  const onlineFlag = String(data?.status || '').toLowerCase() === 'online';
+                  // Update: 改为 2 分钟超时判断，且优先信赖 last_seen
+                  const isOnline = data.last_seen && (new Date().getTime() - new Date(data.last_seen).getTime() < 2 * 60 * 1000);
+                  const onlineFlag = isOnline || String(data?.status || '').toLowerCase() === 'online';
                   const hasSignal = typeof data?.wifi_signal === 'number' && !Number.isNaN(data.wifi_signal);
                   if (onlineFlag || hasSignal) {
                     clearInterval(timer);
@@ -1534,7 +1585,7 @@ const scanAndShowPinmeList = async () => {
             let idUtf8 = '';
             try { idUtf8 = v ? String(b64Decode(v) || '').trim() : ''; }
             catch (e:any) { debug(`Step[Save] FFF3 decode error: ${e?.message || e}; raw=${v}`); idUtf8 = ''; }
-            if (idUtf8 && /^ESP32_/i.test(idUtf8)) { did = toDeviceId(idUtf8); }
+            if (idUtf8 && (/^ESP32_/i.test(idUtf8) || /^pinme_/i.test(idUtf8))) { did = toDeviceId(idUtf8); }
           }
         }
       } catch {}
@@ -1552,9 +1603,33 @@ const scanAndShowPinmeList = async () => {
           return;
         }
       } catch { /* ignore and continue */ }
-      const isoNow = new Date().toISOString();
-      const up: any = {
-        device_id: did,
+      const isoNow = new Date().toISOString();
+      // Try to fetch metrics from device /info via mDNS/AP
+      let metrics: { wifi_signal?: number; fw_version?: string; uptime_s?: number; free_heap?: number } = {};
+      try {
+        const candidates = ['http://esp32.local/info', 'http://192.168.4.1/info'];
+        for (const u of candidates) {
+          try {
+            const controller = new AbortController();
+            const t = setTimeout(() => controller.abort(), 1500);
+            const res = await fetch(u, { signal: controller.signal });
+            clearTimeout(t);
+            if (res.ok) {
+              const j = await res.json();
+              metrics = {
+                wifi_signal: typeof j?.wifi_signal === 'number' ? j.wifi_signal : undefined,
+                fw_version: typeof j?.fw_version === 'string' ? j.fw_version : undefined,
+                uptime_s: typeof j?.uptime_s === 'number' ? j.uptime_s : undefined,
+                free_heap: typeof j?.free_heap === 'number' ? j.free_heap : undefined,
+              };
+              appendStatus(`Step[Save] metrics fetched: signal=${metrics.wifi_signal ?? '-'} fw=${metrics.fw_version ?? '-'} uptime=${metrics.uptime_s ?? '-'} heap=${metrics.free_heap ?? '-'}`);
+              break;
+            }
+          } catch {}
+        }
+      } catch {}
+      const up: any = {
+        device_id: did,
         // If empty, use safe defaults to avoid blocking save
         name: (deviceName && deviceName.trim()) ? deviceName.trim() : 'Toy Reader',
         location: (location && location.trim()) ? location.trim() : 'Unknown',
@@ -1562,12 +1637,16 @@ const scanAndShowPinmeList = async () => {
         wifi_ssid: ssid || null,
         wifi_password: (password && password.trim()) ? password.trim() : null,
         // Requirement: after Save, immediately show online
-        status: 'online',
-        last_seen: isoNow,
-        config: { ...payload, device_id: did, last_wifi_status: lastWifiStatus || null },
-        user_id: uid || null,
-        updated_at: isoNow,
-      };
+        status: 'online',
+        last_seen: isoNow,
+        config: { ...payload, device_id: did, last_wifi_status: lastWifiStatus || null },
+        user_id: uid || null,
+        updated_at: isoNow,
+        fw_version: metrics.fw_version ?? null,
+        uptime_s: metrics.uptime_s ?? null,
+        free_heap: metrics.free_heap ?? null,
+        wifi_signal: metrics.wifi_signal ?? null,
+      };
       // Upsert and explicitly check for errors to avoid silent failures
       const { error: upErr } = await supabase.from('devices').upsert(up, { onConflict: 'device_id' });
     if (upErr) { setError(`Save failed: ${upErr.message}`); appendStatus(`Step[Save] upsert failed: ${upErr.message}`); setSending(false); return; }
@@ -1820,6 +1899,17 @@ const scanAndShowPinmeList = async () => {
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setWifiBlePickerVisible(false)} labelStyle={{ fontFamily: headerFont }}>Close</Button>
+          </Dialog.Actions>
+        </Dialog>
+        {/* Permission prompt */}
+        <Dialog visible={permDialogVisible} onDismiss={() => setPermDialogVisible(false)} style={{ borderRadius: 16 }}>
+          <Dialog.Title style={{ fontFamily: headerFont }}>Permissions required</Dialog.Title>
+          <Dialog.Content>
+            <Text style={{ fontFamily: headerFont }}>{permDialogMsg || 'Bluetooth and Location permissions are required to scan nearby devices.'}</Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={() => { setPermDialogVisible(false); Linking.openSettings().catch(() => {}); }} labelStyle={{ fontFamily: headerFont }}>Open Settings</Button>
+            <Button onPress={() => { setPermDialogVisible(false); scanAndShowPinmeList(); }} labelStyle={{ fontFamily: headerFont }}>Retry</Button>
           </Dialog.Actions>
         </Dialog>
         <Dialog visible={scanningQR} onDismiss={() => setScanningQR(false)} style={{ borderRadius: 16 }}>

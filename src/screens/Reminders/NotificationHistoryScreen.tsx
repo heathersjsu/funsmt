@@ -3,7 +3,7 @@ import { ScrollView, View, Platform } from 'react-native';
 import { Text, Button, useTheme, ActivityIndicator } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
-import { clearNotificationHistory, getNotificationHistory, NotificationHistoryItem, clearUnreadCount } from '../../utils/notifications';
+import { clearNotificationHistory, getNotificationHistory, NotificationHistoryItem, clearUnreadCount, parseOwnerAndToy } from '../../utils/notifications';
 import { useFocusEffect } from '@react-navigation/native';
 import { useNotifications } from '../../context/NotificationsContext';
 
@@ -14,24 +14,6 @@ function formatTime(ts: number) {
   } catch {
     return String(ts);
   }
-}
-
-function parseOwnerAndToy(body?: string): { owner?: string; toy?: string } {
-  if (!body) return {};
-  const s = body.trim();
-  let m = s.match(/^Friendly reminder:\s+(?:(.+?)'s\s+)?(.+?)\s+(?:has|hasn't|hasn’t)\b/i);
-  if (m) {
-    const owner = m[1] ? m[1].trim() : undefined;
-    const toy = m[2] ? m[2].trim() : undefined;
-    return { owner, toy };
-  }
-  m = s.replace(/^温馨提示：/, '').match(/^(?:(.+?)的)?(.+?)(?:已|还|已经)/);
-  if (m) {
-    const owner = m[1] ? m[1].trim() : undefined;
-    const toy = m[2] ? m[2].trim() : undefined;
-    return { owner, toy };
-  }
-  return {};
 }
 
 export default function NotificationHistoryScreen() {
@@ -45,7 +27,12 @@ export default function NotificationHistoryScreen() {
     setLoading(true);
     const arr = await getNotificationHistory();
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const filtered = (arr || []).filter((i) => i.timestamp >= cutoff);
+    const filtered = (arr || []).filter((i) => {
+      if (i.timestamp < cutoff) return false;
+      const { owner, toy } = parseOwnerAndToy(i.body);
+      // User requested to only show notifications that have both toy and owner
+      return !!(owner && toy);
+    });
     setItems(filtered.slice().sort((a, b) => b.timestamp - a.timestamp));
     setLoading(false);
   }, []);
@@ -86,6 +73,8 @@ export default function NotificationHistoryScreen() {
       .replace(/\bLong Play\b/gi, '')
       .replace(/\bIdle Toy Reminder\b/gi, '')
       ;
+    const isRedundantTitle = /^(Long Play|Long Play Reminder|Idle Toy|Idle Toy Reminder)$/i.test(it.title);
+
     return (
       <View style={{
         flexDirection: 'row',
@@ -98,8 +87,12 @@ export default function NotificationHistoryScreen() {
         <View style={{ width: 4, backgroundColor: meta.color, borderRadius: 4, marginRight: 12 }} />
         <View style={{ flex: 1 }}>
           <Text style={{ color: theme.colors.onSurface, fontSize: 14, lineHeight: 20, fontFamily: headerFont }}>
-            <Text style={{ fontWeight: '600', fontFamily: headerFont }}>{it.title}</Text>
-            <Text> · </Text>
+            {!isRedundantTitle && (
+              <>
+                <Text style={{ fontWeight: '600', fontFamily: headerFont }}>{it.title}</Text>
+                <Text> · </Text>
+              </>
+            )}
             <Text style={{ fontFamily: headerFont }}>{cleanedBody}</Text>
           </Text>
           <View style={{ flexDirection: 'row', marginTop: 6, alignItems: 'center' }}>

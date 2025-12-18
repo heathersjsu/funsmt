@@ -2,7 +2,7 @@
   "project_info": {
     "name": "pinme",
     "description": "React Native app with Expo, Supabase, and Voice capabilities",
-    "last_updated": "2025-12-16"
+    "last_updated": "2025-12-18"
   },
   "features": {
     "voice_command": {
@@ -28,5 +28,5 @@
       "last_action": "User accepted plan"
     }
   },
-  "version": "1.0.1"
+  "version": "2025.12.18"
 }
