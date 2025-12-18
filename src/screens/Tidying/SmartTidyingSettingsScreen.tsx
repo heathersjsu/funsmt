@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { Card, Text, Switch, Button, HelperText, Chip, TextInput, useTheme, Dialog, Portal } from 'react-native-paper';
+import { Card, Text, Switch, Button, HelperText, Chip, TextInput, useTheme, Dialog, Portal, Snackbar } from 'react-native-paper';
 import { getNotificationHistory, NotificationHistoryItem } from '../../utils/notifications';
 import * as SecureStore from 'expo-secure-store';
 import { cancelAllReminders, scheduleSmartTidying } from '../../utils/notifications';
@@ -42,6 +42,10 @@ export default function SmartTidyingSettingsScreen() {
   const [info, setInfo] = useState('');
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const [scanItems, setScanItems] = useState<NotificationHistoryItem[]>([]);
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [snackbarMsg, setSnackbarMsg] = useState('');
+
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
 
   useEffect(() => { (async () => { const s = await loadSettings(); setEnabled(s.enabled); setTime(s.time); setRepeat(s.repeat); setDndStart(s.dndStart || ''); setDndEnd(s.dndEnd || ''); })(); }, []);
 
@@ -61,7 +65,9 @@ export default function SmartTidyingSettingsScreen() {
   const onSave = async () => {
     const s: TidyingSettings = { enabled, time, repeat, dndStart, dndEnd };
     await saveSettings(s);
-    setInfo('Smart tidy-up settings saved.');
+    setInfo('');
+    setSnackbarMsg('Smart tidy-up is saved');
+    setSnackbarVisible(true);
     await cancelAllReminders();
     if (enabled) {
       const { hour, minute } = parseTime(time);
@@ -97,73 +103,84 @@ export default function SmartTidyingSettingsScreen() {
   const closeScan = () => setScanDialogOpen(false);
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.colors.background }]}> 
-      <Text variant="headlineMedium" style={{ marginBottom: 8 }}>Smart Tidy-up Reminder</Text>
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }]}> 
-        <Card.Content>
-          <View style={styles.rowBetween}>
-            <Text>Master Switch</Text>
-            <Switch value={enabled} onValueChange={setEnabled} />
-          </View>
-
-          <Text style={{ marginTop: 12 }}>Daily tidy-up time</Text>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>HH:MM</Text>
-            <TextInput value={time} onChangeText={setTime} placeholder="20:00" dense style={{ width: 120, height: 36 }} />
-          </View>
-
-          <Text style={{ marginTop: 12 }}>Repeat</Text>
-          <View style={[styles.row, { marginTop: 8 }]}> 
-            <Chip selected={repeat==='daily'} onPress={() => setRepeat('daily')} style={styles.chip}>Daily</Chip>
-            <Chip selected={repeat==='weekends'} onPress={() => setRepeat('weekends')} style={styles.chip}>Weekends</Chip>
-            <Chip selected={repeat==='weekdays'} onPress={() => setRepeat('weekdays')} style={styles.chip}>Weekdays</Chip>
-          </View>
-
-          <Text style={{ marginTop: 12, fontWeight: '700' }}>Do Not Disturb</Text>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>Start (HH:MM)</Text>
-            <TextInput value={dndStart} onChangeText={setDndStart} placeholder="22:00" dense style={{ width: 120, height: 36 }} />
-          </View>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>End (HH:MM)</Text>
-            <TextInput value={dndEnd} onChangeText={setDndEnd} placeholder="07:00" dense style={{ width: 120, height: 36 }} />
-          </View>
-
-          {/* 说明语句按需求删除，保持页面更紧凑 */}
-
-          {info ? <HelperText type="info">{info}</HelperText> : null}
-        </Card.Content>
-        <Card.Actions>
-          <Button mode="outlined" onPress={openScan}>Scan now</Button>
-          {/* Save 与 Scan now 保持一致的样式 */}
-          <Button mode="outlined" onPress={onSave}>Save</Button>
-        </Card.Actions>
-      </Card>
-      <Portal>
-        {/* 弹窗保留小号标题 */}
-        <Dialog visible={scanDialogOpen} onDismiss={closeScan} style={{ borderRadius: 16 }}>
-          <Dialog.Title style={{ fontSize: 16 }}>Recent reminders</Dialog.Title>
-          <Dialog.Content style={{ paddingHorizontal: 8 }}>
-            <View style={{ maxHeight: 380 }}>
-              {scanItems.length === 0 ? (
-                <Text>No records.</Text>
-              ) : (
-                scanItems.map((it) => (
-                  <View key={it.id} style={{ marginBottom: 8 }}>
-                    <Text style={{ fontWeight: '600', fontSize: 14 }}>{it.title}</Text>
-                    <Text style={{ opacity: 0.7, fontSize: 12 }}>{formatTime(it.timestamp)}</Text>
-                    {it.body ? <Text style={{ opacity: 0.8, fontSize: 12 }}>{it.body}</Text> : null}
-                  </View>
-                ))
-              )}
+    <>
+      <ScrollView 
+        style={[styles.container, { backgroundColor: theme.colors.background }]} 
+        contentContainerStyle={[
+          { paddingBottom: 24 },
+          Platform.OS === 'web' && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+        ]}
+      > 
+        <Text variant="headlineMedium" style={{ marginBottom: 8, fontFamily: headerFont }}>Smart Tidy-up Reminder</Text>
+        <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }]}> 
+          <Card.Content>
+            <View style={styles.rowBetween}>
+              <Text style={{ fontFamily: headerFont }}>Master Switch</Text>
+              <Switch value={enabled} onValueChange={setEnabled} />
             </View>
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={closeScan}>Close</Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
-    </View>
+
+            <Text style={{ marginTop: 12, fontFamily: headerFont }}>Daily tidy-up time</Text>
+            <View style={[styles.rowBetween, { marginTop: 8 }]}> 
+              <Text style={{ fontFamily: headerFont }}>HH:MM</Text>
+              <TextInput value={time} onChangeText={setTime} placeholder="20:00" dense style={{ width: 120, height: 36 }} contentStyle={{ fontFamily: headerFont }} />
+            </View>
+
+            <Text style={{ marginTop: 12, fontFamily: headerFont }}>Repeat</Text>
+            <View style={[styles.row, { marginTop: 8 }]}> 
+              <Chip selected={repeat==='daily'} onPress={() => setRepeat('daily')} style={styles.chip} textStyle={{ fontFamily: headerFont }}>Daily</Chip>
+              <Chip selected={repeat==='weekends'} onPress={() => setRepeat('weekends')} style={styles.chip} textStyle={{ fontFamily: headerFont }}>Weekends</Chip>
+              <Chip selected={repeat==='weekdays'} onPress={() => setRepeat('weekdays')} style={styles.chip} textStyle={{ fontFamily: headerFont }}>Weekdays</Chip>
+            </View>
+
+            <Text style={{ marginTop: 12, fontWeight: '700', fontFamily: headerFont }}>Do Not Disturb</Text>
+            <View style={[styles.rowBetween, { marginTop: 8 }]}> 
+              <Text style={{ fontFamily: headerFont }}>Start (HH:MM)</Text>
+              <TextInput value={dndStart} onChangeText={setDndStart} placeholder="22:00" dense style={{ width: 120, height: 36 }} contentStyle={{ fontFamily: headerFont }} />
+            </View>
+            <View style={[styles.rowBetween, { marginTop: 8 }]}> 
+              <Text style={{ fontFamily: headerFont }}>End (HH:MM)</Text>
+              <TextInput value={dndEnd} onChangeText={setDndEnd} placeholder="07:00" dense style={{ width: 120, height: 36 }} contentStyle={{ fontFamily: headerFont }} />
+            </View>
+
+            {/* 说明语句按需求删除，保持页面更紧凑 */}
+
+            {info ? <HelperText type="info" style={{ fontFamily: headerFont }}>{info}</HelperText> : null}
+          </Card.Content>
+          <Card.Actions>
+            <Button mode="outlined" onPress={openScan} labelStyle={{ fontFamily: headerFont }}>Scan now</Button>
+            {/* Save 与 Scan now 保持一致的样式 */}
+            <Button mode="outlined" onPress={onSave} labelStyle={{ fontFamily: headerFont }}>Save</Button>
+          </Card.Actions>
+        </Card>
+        <Portal>
+          {/* 弹窗保留小号标题 */}
+          <Dialog visible={scanDialogOpen} onDismiss={closeScan} style={{ borderRadius: 16 }}>
+            <Dialog.Title style={{ fontSize: 16, fontFamily: headerFont }}>Recent reminders</Dialog.Title>
+            <Dialog.Content style={{ paddingHorizontal: 8 }}>
+              <View style={{ maxHeight: 380 }}>
+                {scanItems.length === 0 ? (
+                  <Text style={{ fontFamily: headerFont }}>No records.</Text>
+                ) : (
+                  scanItems.map((it) => (
+                    <View key={it.id} style={{ marginBottom: 8 }}>
+                      <Text style={{ fontWeight: '600', fontSize: 14, fontFamily: headerFont }}>{it.title}</Text>
+                      <Text style={{ opacity: 0.7, fontSize: 12, fontFamily: headerFont }}>{formatTime(it.timestamp)}</Text>
+                      {it.body ? <Text style={{ opacity: 0.8, fontSize: 12, fontFamily: headerFont }}>{it.body}</Text> : null}
+                    </View>
+                  ))
+                )}
+              </View>
+            </Dialog.Content>
+            <Dialog.Actions>
+              <Button onPress={closeScan} labelStyle={{ fontFamily: headerFont }}>Close</Button>
+            </Dialog.Actions>
+          </Dialog>
+        </Portal>
+      </ScrollView> 
+      <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={2000} style={{ backgroundColor: theme.colors.secondaryContainer, alignSelf: 'center' }} wrapperStyle={{ position: 'absolute', top: '45%', left: 0, right: 0 }}>
+        <Text style={{ color: theme.colors.onSecondaryContainer }}>{snackbarMsg}</Text>
+      </Snackbar>
+    </>
   );
 }
 

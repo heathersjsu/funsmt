@@ -45,6 +45,7 @@ export default function ToyCheckInScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [catMenuOpen, setCatMenuOpen] = useState(false);
   const [nfcReady, setNfcReady] = useState(false);
+  const [status, setStatus] = useState<'in' | 'out'>('in');
   const theme = useTheme();
 
   useEffect(() => {
@@ -129,7 +130,7 @@ export default function ToyCheckInScreen({ navigation }: Props) {
       source: source || null,
       location: location || null,
       owner: owner || null,
-      status: 'in' as const,
+      status,
       notes: notes || null,
       user_id: uid,
     };
@@ -158,42 +159,57 @@ export default function ToyCheckInScreen({ navigation }: Props) {
     }
   };
 
+  const isWeb = Platform.OS === 'web';
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
-        <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.primary }]}>Toy Check-In</Text>
-        <HelperText type="info">Default status is in (in)</HelperText>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={[
+          { padding: 16, paddingBottom: 40 },
+          isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
+        ]}
+      >
+        <Text variant="headlineMedium" style={{ marginBottom: 16, color: theme.colors.onSurface, textAlign: 'center', fontWeight: 'bold', fontFamily: headerFont }}>
+          Add New Toy
+        </Text>
+        <HelperText type="info" style={{ fontFamily: headerFont }}>Default status is in (in)</HelperText>
         <View style={styles.formRow}>
           <View style={styles.col}>
-            <TextInput label="Name" value={name} onChangeText={setName} style={styles.input} />
+            <TextInput label="Name" value={name} onChangeText={setName} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <Menu
                 visible={catMenuOpen}
                 onDismiss={() => setCatMenuOpen(false)}
-                anchor={<Button onPress={() => setCatMenuOpen(true)}>{category ? `Category: ${category}` : 'Select Category'}</Button>}
+                anchor={<Button onPress={() => setCatMenuOpen(true)} labelStyle={{ fontFamily: headerFont }}>{category ? `Category: ${category}` : 'Select Category'}</Button>}
               >
                 {CATEGORIES.map((c) => (
-                  <Menu.Item key={c} onPress={() => { setCategory(c); setCatMenuOpen(false); }} title={c} />
+                  <Menu.Item key={c} onPress={() => { setCategory(c); setCatMenuOpen(false); }} title={c} titleStyle={{ fontFamily: headerFont }} />
                 ))}
               </Menu>
             </View>
-            <TextInput label="Source (optional)" value={source} onChangeText={setSource} style={styles.input} />
-            <Button onPress={takePhoto} style={{ marginBottom: 8 }}>Take Photo</Button>
-            <Button onPress={pickImage}>Choose Photo</Button>
+            <TextInput label="Source (optional)" value={source} onChangeText={setSource} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <Button onPress={takePhoto} style={{ marginBottom: 8 }} labelStyle={{ fontFamily: headerFont }}>Take Photo</Button>
+            <Button onPress={pickImage} labelStyle={{ fontFamily: headerFont }}>Choose Photo</Button>
             {(() => { const safeUri = getSafeImageUri(photoUrl || undefined); return safeUri ? (<Image source={{ uri: safeUri }} style={{ width: '100%', height: 200, marginVertical: 8 }} />) : null; })()}
           </View>
           <View style={styles.col}>
-            <TextInput label="RFID tag (optional)" value={rfid} onChangeText={setRfid} style={styles.input} />
-            <Button onPress={readRfidViaNfc} disabled={!nfcReady} style={{ marginBottom: 8 }}>
+            <TextInput label="RFID tag (optional)" value={rfid} onChangeText={setRfid} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <Button onPress={readRfidViaNfc} disabled={!nfcReady} style={{ marginBottom: 8 }} labelStyle={{ fontFamily: headerFont }}>
               {nfcReady ? 'Read RFID via NFC' : 'NFC not available'}
             </Button>
-            <TextInput label="Location (optional)" value={location} onChangeText={setLocation} style={styles.input} />
-            <TextInput label="Owner (optional)" value={owner} onChangeText={setOwner} style={styles.input} />
-            <TextInput label="Notes (optional)" value={notes} onChangeText={setNotes} style={styles.input} multiline />
+            <TextInput label="Location (optional)" value={location} onChangeText={setLocation} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <TextInput label="Owner (optional)" value={owner} onChangeText={setOwner} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <TextInput label="Notes (optional)" value={notes} onChangeText={setNotes} style={[styles.input, { backgroundColor: '#FFF' }]} multiline contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
           </View>
         </View>
-        {error && <Text style={{ color: theme.colors.error }}>{error}</Text>}
-        <Button mode="contained" onPress={submit} loading={loading} style={styles.button}>Check In</Button>
+        {error && <Text style={{ color: theme.colors.error, fontFamily: headerFont }}>{error}</Text>}
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <Button mode={status === 'in' ? 'contained' : 'outlined'} onPress={() => setStatus('in')} labelStyle={{ fontFamily: headerFont }}>Set In Place</Button>
+          <Button mode={status === 'out' ? 'contained' : 'outlined'} onPress={() => setStatus('out')} labelStyle={{ fontFamily: headerFont }}>Set as Playing</Button>
+        </View>
+        <Button mode="contained" onPress={submit} loading={loading} style={styles.button} labelStyle={{ fontFamily: headerFont }}>Check In</Button>
       </ScrollView>
     </LinearGradient>
   );

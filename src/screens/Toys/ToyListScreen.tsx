@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, FlatList, TouchableOpacity, ScrollView, Pressable, RefreshControl } from 'react-native';
+import { View, StyleSheet, FlatList, TouchableOpacity, ScrollView, Pressable, RefreshControl, Platform, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import { Button, Chip, Card, Text, Menu, Searchbar, Banner, useTheme, List } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
@@ -17,6 +17,8 @@ type Props = NativeStackScreenProps<any>;
 export default function ToyListScreen({ navigation }: Props) {
   const theme = useTheme();
   const semantics = getSemanticsFromTheme(theme);
+  const { width } = useWindowDimensions();
+  const cardWidth = width > 1200 ? '18%' : width > 900 ? '23%' : width > 600 ? '31%' : '48%';
   
   const [toys, setToys] = useState<Toy[]>([]);
   const [query, setQuery] = useState('');
@@ -182,7 +184,7 @@ export default function ToyListScreen({ navigation }: Props) {
         })
         .subscribe();
 
-      // New subscription: listen to play_sessions INSERT events, toggle toys.status after receiving scan
+      // New subscription: listen to play_sessions INSERT events, update local activeSessions only
       const sessionsChannel = supabase
         .channel('sessions-insert')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'play_sessions' }, async (payload) => {
@@ -191,21 +193,13 @@ export default function ToyListScreen({ navigation }: Props) {
           const st = row.scan_time as string | undefined;
           if (!tid) return;
           try {
-            // Ensure authenticated user for updates under RLS
-            const { data: userRes } = await supabase.auth.getUser();
-            if (!userRes?.user?.id) return;
-            // Read current status and toggle
             const { data } = await supabase.from('toys').select('status').eq('id', tid).maybeSingle();
-            const prev = (data as any)?.status as 'in' | 'out' | null;
-            const next = prev === 'out' ? 'in' : 'out';
-            await supabase.from('toys').update({ status: next }).eq('id', tid);
-            // Update UI duration start point first (will eventually be synced by toys UPDATE event)
-            if (next === 'out' && st) {
+            const cur = (data as any)?.status as 'in' | 'out' | null;
+            if (cur === 'out' && st) {
               setActiveSessions((prev) => ({ ...prev, [tid]: st }));
             } else {
               setActiveSessions((prev) => { const { [tid]: _, ...rest } = prev; return rest; });
             }
-            // Update last played map immediately so "Last Played" text stays fresh
             if (st) {
               setLastPlayedTimes((prev) => ({ ...prev, [tid]: st }));
             }
@@ -294,6 +288,25 @@ export default function ToyListScreen({ navigation }: Props) {
     }
   }, [sort, categoryFilter, ownerFilter, query]);
 
+  const seedSampleToys = async () => {
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u?.user?.id;
+      if (!uid) { setPageError('No session user'); return; }
+      const now = new Date().toISOString();
+      const rows = [
+        { name: 'Sample Bear', status: 'in', category: 'Plush', owner: 'Family', location: 'Shelf', user_id: uid, updated_at: now },
+        { name: 'Sample Blocks', status: 'in', category: 'Blocks', owner: 'Family', location: 'Box', user_id: uid, updated_at: now },
+        { name: 'Sample Car', status: 'out', category: 'Vehicle', owner: 'Family', location: 'Playroom', user_id: uid, updated_at: now },
+      ];
+      const { error } = await supabase.from('toys').insert(rows);
+      if (error) { setPageError(error.message); return; }
+      await fetchToys();
+    } catch (e: any) {
+      setPageError(e?.message || 'Seed failed');
+    }
+  };
+
   useEffect(() => {
     fetchToys();
   }, [sort, categoryFilter, ownerFilter, query]);
@@ -348,24 +361,24 @@ export default function ToyListScreen({ navigation }: Props) {
     const onOpen = () => navigation.navigate('ToyForm', { toy: item, readOnly: true });
   
     return (
-      <Pressable onPress={onOpen} style={({ pressed }) => ({ borderRadius: 16, transform: [{ scale: pressed ? 0.98 : 1 }] })} hitSlop={8}>
-        <Card style={[styles.tile, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}>
+      <Pressable onPress={onOpen} style={({ pressed }) => ({ borderRadius: 20, transform: [{ scale: pressed ? 0.98 : 1 }] })} hitSlop={8}>
+        <Card style={[styles.tile, { backgroundColor: theme.colors.surface, borderWidth: 0 }]}>
           {item.photo_url ? (
             <View>
               <Image
                 source={{ uri: item.photo_url }}
-                style={{ width: '100%', aspectRatio: 16/9, height: undefined, borderTopLeftRadius: 14, borderTopRightRadius: 14, backgroundColor: theme.colors.surfaceVariant }}
+                style={{ width: '100%', aspectRatio: 1, height: undefined, borderTopLeftRadius: 20, borderTopRightRadius: 20, backgroundColor: theme.colors.surfaceVariant }}
                 contentFit="cover"
                 cachePolicy="disk"
               />
             </View>
           ) : (
-            <View style={{ width: '100%', aspectRatio: 16/9, height: undefined, backgroundColor: theme.colors.secondaryContainer, borderTopLeftRadius: 14, borderTopRightRadius: 14, alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: '100%', aspectRatio: 1, height: undefined, backgroundColor: theme.colors.secondaryContainer, borderTopLeftRadius: 20, borderTopRightRadius: 20, alignItems: 'center', justifyContent: 'center' }}>
               {/* Default gray logo when photo is missing */}
               <Image
                 // Use app icon and tint it to darker black‑gray
                 source={require('../../../assets/icon.png')}
-                style={{ width: '50%', height: '70%', tintColor: '#333333' }}
+                style={{ width: '50%', height: '70%', tintColor: '#9E9E9E' }}
                 contentFit="contain"
                 cachePolicy="none"
               />
@@ -374,28 +387,31 @@ export default function ToyListScreen({ navigation }: Props) {
           <View style={[styles.statusTag, { backgroundColor: item.status === 'in' ? statusColors.online : statusColors.danger }]}>
             <Text style={[styles.textSmall, { color: '#fff' }]}>{item.status === 'in' ? 'In Place' : 'Playing'}</Text>
           </View>
-          <Card.Content style={{ flex: 1, paddingHorizontal: 4 }}>
+          <Card.Content style={{ flex: 1, padding: 12 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text numberOfLines={1} style={[styles.textTitle, { color: theme.colors.onSurface, flex: 1, marginRight: 8 }]}>{item.name}</Text>
-              <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.onSurfaceVariant, textAlign: 'right' }]}>{item.owner || '-'}</Text>
+              <Text numberOfLines={1} style={[styles.textTitle, { color: theme.colors.primary, flex: 1, marginRight: 8 }]}>{item.name}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                 <MaterialCommunityIcons name="account" size={14} color={theme.colors.onSurfaceVariant} style={{ marginRight: 2 }} />
+                 <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.onSurfaceVariant, fontWeight: 'bold' }]}>{item.owner || 'Unknown'}</Text>
+              </View>
             </View>
-            <Text numberOfLines={1} style={[styles.textBody, { color: theme.colors.onSurfaceVariant, marginTop: 2 }]}>Last Played: {getLastPlayedText(item.id)}</Text>
-            <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 8, width: '100%' }}>
+            <Text numberOfLines={1} style={[styles.textSmall, { color: theme.colors.onSurfaceVariant, marginTop: 4 }]}>Last Played: {getLastPlayedText(item.id)}</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, width: '100%', gap: 8 }}>
               <Button
-                mode="contained-tonal"
+                mode="contained"
                 onPress={() => navigation.navigate('ToyForm', { toy: item })}
-                style={{ borderRadius: 10 }}
-                contentStyle={{ height: 40, width: 80, paddingHorizontal: 6, justifyContent: 'center' }}
-                labelStyle={[styles.textSmall, { marginLeft: 15, textAlign: 'center' }]}
+                style={{ borderRadius: 20, flex: 1, backgroundColor: theme.colors.primaryContainer }}
+                contentStyle={{ height: 40, justifyContent: 'center' }}
+                labelStyle={[styles.textSmall, { color: theme.colors.onPrimaryContainer, fontWeight: 'bold', marginVertical: 0, marginHorizontal: 0 }]}
               >
                 Edit
               </Button>
               <Button
-                mode="contained-tonal"
-                onPress={() => navigation.navigate('ToyForm', { toy: item, readOnly: true, showHistory: true })}
-                style={{ marginLeft: 10, borderRadius: 10 }}
-                contentStyle={{ height: 40, width: 80, paddingHorizontal: 6, justifyContent: 'center' }}
-                labelStyle={[styles.textSmall, { marginLeft: 1, textAlign: 'center' }]}
+                mode="contained"
+                onPress={() => navigation.navigate('ToyHistory', { toyId: item.id })}
+                style={{ borderRadius: 20, flex: 1, backgroundColor: theme.colors.secondaryContainer }}
+                contentStyle={{ height: 40, justifyContent: 'center' }}
+                labelStyle={[styles.textSmall, { color: theme.colors.onSecondaryContainer, fontWeight: 'bold', marginVertical: 0, marginHorizontal: 0 }]}
               >
                 History
               </Button>
@@ -406,19 +422,25 @@ export default function ToyListScreen({ navigation }: Props) {
     );
   };
 
+  const isWeb = Platform.OS === 'web';
+
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
       <ScrollView
-        style={[styles.container, { backgroundColor: 'transparent' }]}
-        contentContainerStyle={{ paddingBottom: 24 }}
+        style={[styles.container, { backgroundColor: 'transparent', width: '100%' }]}
+        contentContainerStyle={[
+          { paddingBottom: 24 },
+          isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+        ]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        alwaysBounceVertical={true}
       >
       {pageError && (
-        <Banner visible icon="alert" style={{ marginBottom: 8, backgroundColor: theme.colors.errorContainer, borderRadius: 16 }}>
+        <Banner visible icon="alert" style={{ marginBottom: 12, backgroundColor: theme.colors.errorContainer, borderRadius: 20 }}>
           <Text style={[styles.textBody, { color: theme.colors.onErrorContainer, fontWeight: '600' }]}>{pageError}</Text>
         </Banner>
       )}
-      <Banner visible={showEmptyBanner} actions={[{ label: 'Add Toy', onPress: () => navigation.navigate('ToyForm') }]} icon="emoticon-happy-outline" style={{ marginBottom: 8, backgroundColor: theme.colors.secondaryContainer, borderRadius: 16 }}>
+      <Banner visible={showEmptyBanner} actions={[{ label: 'Add Toy', onPress: () => navigation.navigate('ToyForm') }, { label: 'Seed Sample', onPress: seedSampleToys }]} icon="emoticon-happy-outline" style={{ marginBottom: 12, backgroundColor: theme.colors.secondaryContainer, borderRadius: 20 }}>
         <Text style={styles.textBody}>No toys found. Try adjusting filters or add a new toy.</Text>
       </Banner>
       <View style={styles.filterBar}>
@@ -427,16 +449,16 @@ export default function ToyListScreen({ navigation }: Props) {
           value={query}
           onChangeText={setQuery}
           onSubmitEditing={fetchToys}
-          style={[styles.search, { flex: 1, borderRadius: 16, backgroundColor: theme.colors.surface, height: 48, minHeight: 48, paddingVertical: 0 }]}
-          inputStyle={[styles.textSmall, { paddingVertical: 0 }]}
+          style={[{ flex: 1, borderRadius: 24, backgroundColor: theme.colors.surface, height: 52, minHeight: 52, paddingVertical: 0 }]}
+          inputStyle={[styles.textBody, { paddingVertical: 0 }]}
         />
         <Button
           mode="contained-tonal"
           icon="filter-variant"
           onPress={() => setShowFilters((v) => !v)}
-          style={{ marginLeft: 8, borderRadius: 16, height: 48 }}
-          contentStyle={{ height: 48, paddingHorizontal: 10, justifyContent: 'center' }}
-          labelStyle={styles.textSmall}
+          style={{ marginLeft: 8, borderRadius: 24, height: 52, backgroundColor: theme.colors.secondaryContainer }}
+          contentStyle={{ height: 52, paddingHorizontal: 12, justifyContent: 'center' }}
+          labelStyle={[styles.textBody, { fontWeight: 'bold' }]}
         >
           Filter
         </Button>
@@ -486,9 +508,9 @@ export default function ToyListScreen({ navigation }: Props) {
           {/* Playing and In Place groups */}
           <View style={{ marginBottom: 12 }}>
             <List.Subheader style={styles.subheader}>Playing</List.Subheader>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
               {toys.filter((t) => t.status === 'out').map((it) => (
-                <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
+                <View key={it.id} style={{ width: cardWidth, marginVertical: 6 }}>
                   {renderTile(it)}
                 </View>
               ))}
@@ -496,9 +518,9 @@ export default function ToyListScreen({ navigation }: Props) {
           </View>
           <View style={{ marginBottom: 12 }}>
             <List.Subheader style={styles.subheader}>In Place</List.Subheader>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
               {toys.filter((t) => t.status === 'in').map((it) => (
-                <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
+                <View key={it.id} style={{ width: cardWidth, marginVertical: 6 }}>
                   {renderTile(it)}
                 </View>
               ))}
@@ -510,9 +532,9 @@ export default function ToyListScreen({ navigation }: Props) {
           {groupedByCategory.map(([cat, items]) => (
             <View key={cat} style={{ marginBottom: 12 }}>
               <List.Subheader style={styles.subheader}>{cat}</List.Subheader>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
                 {items.map((it) => (
-                  <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
+                  <View key={it.id} style={{ width: cardWidth, marginVertical: 6 }}>
                     {renderTile(it)}
                   </View>
                 ))}
@@ -525,9 +547,9 @@ export default function ToyListScreen({ navigation }: Props) {
           {groupedByOwner.map(([own, items]) => (
             <View key={own} style={{ marginBottom: 12 }}>
               <List.Subheader style={styles.subheader}>{own}</List.Subheader>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
                 {items.map((it) => (
-                  <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
+                  <View key={it.id} style={{ width: cardWidth, marginVertical: 6 }}>
                     {renderTile(it)}
                   </View>
                 ))}
@@ -540,9 +562,9 @@ export default function ToyListScreen({ navigation }: Props) {
           {/* remove grouped views: replace conditional with unified list */}
           <View>
             <List.Subheader style={styles.subheader}>All</List.Subheader>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
               {toys.map((it) => (
-                <View key={it.id} style={{ width: '48%', marginVertical: 6 }}>
+                <View key={it.id} style={{ width: cardWidth, marginVertical: 6 }}>
                   {renderTile(it)}
                 </View>
               ))}
@@ -556,16 +578,15 @@ export default function ToyListScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 12 },
-  search: { marginBottom: 8 },
-  filterBar: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
-  chips: { flexDirection: 'row', marginBottom: 8, alignItems: 'center' },
-  chip: { marginRight: 8, borderRadius: 20 },
-  tile: { width: '100%', borderRadius: 16, overflow: 'hidden' },
-  statusTag: { position: 'absolute', top: 8, left: 8, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, opacity: 0.92 },
+  container: { flex: 1, paddingHorizontal: 16, paddingTop: 4, paddingBottom: 16 },
+  filterBar: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+  chips: { flexDirection: 'row', marginBottom: 12, alignItems: 'center' },
+  chip: { marginRight: 8, borderRadius: 24 },
+  tile: { width: '100%', borderRadius: 20, overflow: 'hidden', elevation: 4 },
+  statusTag: { position: 'absolute', top: 12, left: 12, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, opacity: 0.95 },
   // Unified typography
-  textTitle: { fontSize: 16, fontWeight: '700' },
-  textBody: { fontSize: 13, lineHeight: 18 },
-  textSmall: { fontSize: 12, lineHeight: 16 },
-  subheader: { fontSize: 14, fontWeight: '700' },
+  textTitle: { fontSize: 18, fontWeight: '700', fontFamily: Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' }) },
+  textBody: { fontSize: 14, lineHeight: 20, fontFamily: Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif', default: 'System' }) },
+  textSmall: { fontSize: 12, lineHeight: 16, fontFamily: Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif', default: 'System' }) },
+  subheader: { fontSize: 16, marginBottom: 8, fontFamily: Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif', default: 'System' }) },
 });

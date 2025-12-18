@@ -1,0 +1,32 @@
+{
+  "project_info": {
+    "name": "pinme",
+    "description": "React Native app with Expo, Supabase, and Voice capabilities",
+    "last_updated": "2025-12-16"
+  },
+  "features": {
+    "voice_command": {
+      "status": "active",
+      "key_components": ["src/screens/Voice/VoiceCommandScreen.tsx", "App.tsx"],
+      "config": {
+        "listening_timeout": "manual_release",
+        "error_display_duration": 2000,
+        "listening_display_duration": 600000,
+        "permissions": ["RECORD_AUDIO", "NSMicrophoneUsageDescription"]
+      },
+      "issues_resolved": [
+        "False 'No speech detected'",
+        "Permanent error display",
+        "Missing permission prompt on first use"
+      ]
+    },
+    "dev_environment": {
+      "status": "approved_for_execution",
+      "issues": ["Dev Client connection failed"],
+      "fixes": ["ADB port forwarding", "Tunnel mode"],
+      "pending_tasks": ["Rebuild Android Dev Client", "Start Expo Tunnel"],
+      "last_action": "User accepted plan"
+    }
+  },
+  "version": "1.0.1"
+}

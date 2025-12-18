@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Text, Card, Button, List, useTheme, Switch, TextInput, Checkbox, HelperText, Chip, Dialog, Portal } from 'react-native-paper';
+import { View, StyleSheet, ScrollView, Platform, TouchableOpacity, Animated } from 'react-native';
+import { Text, Card, Button, List, useTheme, Switch, TextInput, Checkbox, HelperText, Chip, Dialog, Portal, SegmentedButtons, Divider, Snackbar } from 'react-native-paper';
 import * as SecureStore from 'expo-secure-store';
 import { getFunctionUrl, loadFigmaThemeOverrides, buildKidTheme } from '../../theme';
 import { useThemeUpdate } from '../../theme/ThemeContext';
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { scheduleLocalDailyCheck, getNotificationHistory, NotificationHistoryItem } from '../../utils/notifications';
+import { scheduleLocalDailyCheck, getNotificationHistory, NotificationHistoryItem, recordNotificationHistory } from '../../utils/notifications';
 import { useNavigation } from '@react-navigation/native';
 import { startLongPlayMonitor, stopLongPlayMonitor, LongPlaySettings } from '../../reminders/longPlay';
 import { IdleToySettings, runIdleScan } from '../../reminders/idleToy';
@@ -26,11 +26,29 @@ export default function ReminderStatusScreen({}: Props) {
   const { setTheme } = useThemeUpdate();
   const theme = useTheme();
   const navigation = useNavigation<any>();
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [snackbarMsg, setSnackbarMsg] = useState('');
+  const MinimalSwitch = ({ val, onToggle }: { val: boolean; onToggle: () => void }) => {
+    const anim = React.useRef(new Animated.Value(val ? 1 : 0)).current;
+    React.useEffect(() => { Animated.timing(anim, { toValue: val ? 1 : 0, duration: 180, useNativeDriver: true }).start(); }, [val]);
+    const translateX = anim.interpolate({ inputRange: [0, 1], outputRange: [2, 22] });
+    return (
+      <TouchableOpacity
+        onPress={onToggle}
+        activeOpacity={0.8}
+        style={{ width: 48, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: theme.colors.primary, backgroundColor: val ? theme.colors.primary : 'white', padding: 2, overflow: 'hidden' }}
+      >
+        <Animated.View style={{ position: 'absolute', top: 1, width: 24, height: 24, borderRadius: 12, backgroundColor: 'white', borderWidth: val ? 0 : 1, borderColor: theme.colors.primary, transform: [{ translateX }] }} />
+      </TouchableOpacity>
+    );
+  };
 
   // ---- Scan popup state ----
   const [scanDialogOpen, setScanDialogOpen] = useState(false);
   const [scanItems, setScanItems] = useState<NotificationHistoryItem[]>([]);
   const [scanTitle, setScanTitle] = useState<string>('Recent items');
+  const [scanMeta, setScanMeta] = useState<Record<string, { toy?: string; owner?: string }>>({});
   const openScan = async (source: 'longPlay' | 'idleToy' | 'smartTidying') => {
     try {
       if (source === 'longPlay') {
@@ -57,11 +75,22 @@ export default function ReminderStatusScreen({}: Props) {
           if (mins >= lp.durationMin) {
             const ownerLabel = owner ? `${owner}'s ` : '';
             const body = `Friendly reminder: ${ownerLabel}${name} has been playing for ${mins} minutes (threshold ${lp.durationMin} minutes). Take a short break, drink some water, and rest your eyes.`;
-            nowItems.push({ id: `now_${tid}`, title: 'Long Play', body, timestamp: Date.now(), source: 'longplay' });
+            nowItems.push({ id: `now_${tid}`, title: 'Long Play', body, timestamp: Date.now(), source: `longPlay:scan:${tid}:${mins}` });
           }
         }
         setScanTitle('Currently exceeding play threshold');
         setScanItems(nowItems);
+        // Also record into notification history for bell icon
+        try {
+          const history = await getNotificationHistory();
+          const nowTs = Date.now();
+          for (const it of nowItems) {
+            const dup = (history || []).some(h => h.title === it.title && h.body === it.body && Math.abs(nowTs - (h.timestamp || 0)) < 180000);
+            if (!dup) {
+              await recordNotificationHistory(it.title, it.body || '', it.source);
+            }
+          }
+        } catch {}
         setScanDialogOpen(true);
         return;
       }
@@ -72,8 +101,31 @@ export default function ReminderStatusScreen({}: Props) {
         .sort((a, b) => (b.timestamp - a.timestamp))
         .slice(0, 20);
       const label = source === 'idleToy' ? 'Idle Toy — recent 20' : 'Smart Tidy-up — recent 20';
+      // Build toy/owner meta from source when body parsing fails (mobile fallback)
+      const meta: Record<string, { toy?: string; owner?: string }> = {};
+      if (source === 'idleToy') {
+        try {
+          const toyIds = Array.from(new Set(items.map(it => {
+            const m = String(it.source || '').match(/idleToy:([a-z0-9-]+)/i);
+            return m ? m[1] : null;
+          }).filter(Boolean) as string[]));
+          if (toyIds.length) {
+            const { data: rows } = await supabase.from('toys').select('id,name,owner').in('id', toyIds as any);
+            const mapById: Record<string, { name?: string; owner?: string }> = {};
+            (rows || []).forEach((r: any) => { mapById[r.id] = { name: r.name, owner: r.owner }; });
+            items.forEach(it => {
+              const m = String(it.source || '').match(/idleToy:([a-z0-9-]+)/i);
+              const tid = m ? m[1] : null;
+              if (tid && mapById[tid]) {
+                meta[it.id] = { toy: mapById[tid].name, owner: mapById[tid].owner };
+              }
+            });
+          }
+        } catch {}
+      }
       setScanTitle(label);
       setScanItems(items);
+      setScanMeta(meta);
       setScanDialogOpen(true);
     } catch {
       setScanItems([]);
@@ -104,10 +156,32 @@ export default function ReminderStatusScreen({}: Props) {
   const formatTime = (ts: number) => {
     try { return new Date(ts).toLocaleString(); } catch { return String(ts); }
   };
+  const parseOwnerAndToy = (body?: string): { owner?: string; toy?: string } => {
+    if (!body) return {};
+    try {
+      const s = body.trim();
+      // English pattern: Friendly reminder: Alex's Teddy has been ...
+      let m = s.match(/^Friendly reminder:\s+(?:(.+?)'s\s+)?(.+?)\s+(?:has|hasn't|hasn’t)\b/i);
+      if (m) {
+        const owner = m[1] ? m[1].trim() : undefined;
+        const toy = m[2] ? m[2].trim() : undefined;
+        return { owner, toy };
+      }
+      // Chinese historic pattern: 温馨提示：Alex 的 Teddy 已连续玩 ...
+      m = s.replace(/^温馨提示：/, '').match(/^(?:(.+?)的)?(.+?)(?:已|还|已经)/);
+      if (m) {
+        const owner = m[1] ? m[1].trim() : undefined;
+        const toy = m[2] ? m[2].trim() : undefined;
+        return { owner, toy };
+      }
+    } catch {}
+    return {};
+  };
 
   // ---- Long Play inline card state ----
   const [lpEnabled, setLpEnabled] = useState<boolean>(false);
   const [lpDurationMin, setLpDurationMin] = useState<string>('45');
+  const [lpSeg, setLpSeg] = useState<string>('45');
   const [lpPush, setLpPush] = useState<boolean>(true);
   const [lpInApp, setLpInApp] = useState<boolean>(true);
   const [lpInfo, setLpInfo] = useState<string>('');
@@ -115,21 +189,17 @@ export default function ReminderStatusScreen({}: Props) {
   async function loadLp(): Promise<LongPlaySettings> { return await loadLongPlaySettings(); }
   async function saveLp(s: LongPlaySettings) { return await saveLongPlaySettings(s); }
 
-  const onLpMinus = () => { const n = Math.max(1, parseInt(lpDurationMin, 10) - 5); setLpDurationMin(String(n)); };
-  const onLpPlus = () => { const n = Math.min(360, parseInt(lpDurationMin, 10) + 5); setLpDurationMin(String(n)); };
+  useEffect(() => {
+    const presets = ['30', '45', '60'];
+    if (presets.includes(lpSeg)) setLpDurationMin(lpSeg);
+  }, [lpSeg]);
   const onLpSave = async () => {
     const n = parseInt(lpDurationMin, 10);
     const s: LongPlaySettings = { enabled: lpEnabled, durationMin: isNaN(n) ? 45 : n, methods: { push: lpPush, inApp: lpInApp } };
     const res = await saveLp(s);
-    if (!res.remoteSaved) {
-      if (res.error === 'not_logged_in') {
-        setLpInfo('Saved locally. Please sign in to sync to cloud.');
-      } else {
-        setLpInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
-      }
-    } else {
-      setLpInfo('Long Play Reminder settings saved to cloud.');
-    }
+    setLpInfo('');
+    setSnackbarMsg('Long Play Reminder is saved');
+    setSnackbarVisible(true);
     stopLongPlayMonitor();
     if (s.enabled) startLongPlayMonitor(s);
   };
@@ -137,23 +207,22 @@ export default function ReminderStatusScreen({}: Props) {
   // ---- Idle Toy inline card state ----
   const [itEnabled, setItEnabled] = useState(false);
   const [itDays, setItDays] = useState<string>('14');
+  const [itSeg, setItSeg] = useState<string>('14');
   const [itSmartSuggest, setItSmartSuggest] = useState(true);
   const [itInfo, setItInfo] = useState('');
   async function loadIt(): Promise<IdleToySettings> { return await loadIdleToySettings(); }
   async function saveIt(s: IdleToySettings) { return await saveIdleToySettings(s); }
+  useEffect(() => {
+    const presets = ['7', '14', '30'];
+    if (presets.includes(itSeg)) setItDays(itSeg);
+  }, [itSeg]);
   const onItSave = async () => {
     const n = parseInt(itDays, 10);
     const s: IdleToySettings = { enabled: itEnabled, days: isNaN(n) ? 14 : n, smartSuggest: itSmartSuggest };
     const res = await saveIt(s);
-    if (!res.remoteSaved) {
-      if (res.error === 'not_logged_in') {
-        setItInfo('Saved locally. Please sign in to sync to cloud.');
-      } else {
-        setItInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
-      }
-    } else {
-      setItInfo('Idle Toy Reminder settings saved to cloud.');
-    }
+    setItInfo('');
+    setSnackbarMsg('Idle Toy Reminder is saved');
+    setSnackbarVisible(true);
   };
   const onItRunScan = async () => {
     const n = parseInt(itDays, 10);
@@ -165,6 +234,7 @@ export default function ReminderStatusScreen({}: Props) {
   const [stEnabled, setStEnabled] = useState(false);
   const [stTime, setStTime] = useState('20:00');
   const [stRepeat, setStRepeat] = useState<Repeat>('daily');
+  const [stDays, setStDays] = useState<boolean[]>([true, true, true, true, true, true, true]); // S M T W T F S
   const [stDndStart, setStDndStart] = useState('22:00');
   const [stDndEnd, setStDndEnd] = useState('07:00');
   const [stInfo, setStInfo] = useState('');
@@ -186,15 +256,9 @@ export default function ReminderStatusScreen({}: Props) {
   const onStSave = async () => {
     const s: TidyingSettings = { enabled: stEnabled, time: stTime, repeat: stRepeat, dndStart: stDndStart, dndEnd: stDndEnd };
     const res = await saveSt(s);
-    if (!res.remoteSaved) {
-      if (res.error === 'not_logged_in') {
-        setStInfo('Saved locally. Please sign in to sync to cloud.');
-      } else {
-        setStInfo(`Saved locally. Cloud sync failed: ${res.error ?? 'unknown error'}`);
-      }
-    } else {
-      setStInfo('Smart tidy-up settings saved to cloud.');
-    }
+    setStInfo('');
+    setSnackbarMsg('Smart tidy-up is saved');
+    setSnackbarVisible(true);
     await cancelAllReminders();
     if (stEnabled) {
       const { hour, minute } = parseTime(stTime);
@@ -221,6 +285,9 @@ export default function ReminderStatusScreen({}: Props) {
       const lp = await loadLp(); setLpEnabled(lp.enabled); setLpDurationMin(String(lp.durationMin)); setLpPush(lp.methods.push); setLpInApp(lp.methods.inApp);
       const it = await loadIt(); setItEnabled(it.enabled); setItDays(String(it.days)); setItSmartSuggest(it.smartSuggest);
       const st = await loadSt(); setStEnabled(st.enabled); setStTime(st.time); setStRepeat(st.repeat); setStDndStart(st.dndStart || ''); setStDndEnd(st.dndEnd || '');
+      if (st.repeat === 'daily') setStDays([true,true,true,true,true,true,true]);
+      else if (st.repeat === 'weekdays') setStDays([false,true,true,true,true,true,false]);
+      else if (st.repeat === 'weekends') setStDays([true,false,false,false,false,false,true]);
     })();
   }, []);
 
@@ -236,7 +303,13 @@ export default function ReminderStatusScreen({}: Props) {
 
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-    <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
+    <ScrollView 
+      style={[styles.container, { backgroundColor: 'transparent' }]} 
+      contentContainerStyle={[
+        { paddingBottom: 24, paddingLeft: 8, paddingRight: 8 },
+        Platform.OS === 'web' && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
+      ]}
+    >
       {/* 顶部“Reminders”字样按需求删除 */}
 
       {/* Removed: Device Push Tokens card per request */}
@@ -244,183 +317,282 @@ export default function ReminderStatusScreen({}: Props) {
       {/* Removed: Local Reminder card per request */}
 
       {/* Inline: Long Play Reminder card */}
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
-        <Card.Title title="Long Play Reminder" subtitle="Detect continuous play and gently remind" titleStyle={{ fontWeight: '700' }} />
-        <Card.Content>
-          <View style={styles.rowBetween}>
-            <Text>Master Switch</Text>
-            <Switch value={lpEnabled} onValueChange={setLpEnabled} />
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }]}> 
+          <Card.Title
+          title={<Text style={{ fontSize: 16, fontWeight: '700', fontFamily: headerFont, color: '#FF6B9D' }}>Long Play Reminder</Text>}
+          subtitle="Detect continuous play"
+          titleStyle={{}}
+          subtitleStyle={{ fontFamily: headerFont, opacity: 0.7 }}
+          left={(p) => <List.Icon {...p} icon="timer" color="#FF6B9D" />}
+          right={(p) => <View style={{ marginRight: 8, alignItems: 'center', justifyContent: 'center' }}><MinimalSwitch val={lpEnabled} onToggle={() => setLpEnabled(!lpEnabled)} /></View>}
+          />
+        <Card.Content style={{ paddingHorizontal: 16 }}>
+          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontFamily: headerFont }}>Remind me after</Text>
+            <Text style={{ fontFamily: headerFont, color: theme.colors.onSurfaceVariant, fontSize: 12 }}>
+              Current: {parseInt(lpDurationMin || '0', 10) || 45} min
+            </Text>
           </View>
-          <View style={[styles.rowBetween, { marginTop: 12 }]}> 
-            <Text>Duration (minutes)</Text>
-            <View style={styles.row}> 
-        <TextInput
-          value={lpDurationMin}
-          onChangeText={setLpDurationMin}
-          keyboardType="numeric"
-          style={{ width: 100, height: 40, marginHorizontal: 8, borderRadius: 6 }}
-          contentStyle={{ textAlign: 'center' }}
-          dense
-        />
+          <SegmentedButtons
+            value={lpSeg}
+            onValueChange={setLpSeg}
+            style={{ marginTop: 8 }}
+            buttons={[
+              { value: '30', label: '30 min', style: { minWidth: 76 }, labelStyle: { fontSize: 12 } },
+              { value: '45', label: '45 min', style: { minWidth: 76 }, labelStyle: { fontSize: 12 } },
+              { value: '60', label: '60 min', style: { minWidth: 76 }, labelStyle: { fontSize: 12 } },
+              { value: 'custom', label: 'Customize', style: { minWidth: 100 }, labelStyle: { fontSize: 12 } },
+            ]}
+          />
+          {lpSeg === 'custom' && (
+            <View style={[styles.rowBetween, { marginTop: 8 }]}>
+              <Text style={{ fontFamily: headerFont }}>Custom minutes</Text>
+              <TextInput
+                mode="outlined"
+                value={lpDurationMin}
+                onChangeText={(t) => setLpDurationMin(String(t || '').replace(/\D/g, ''))}
+                keyboardType="number-pad"
+                style={{ width: 120, height: 40, backgroundColor: theme.colors.surface }}
+                contentStyle={{ textAlign: 'center' }}
+                outlineColor={theme.colors.primary}
+                activeOutlineColor={theme.colors.primary}
+                right={<TextInput.Affix text="min" />}
+                dense
+              />
             </View>
-          </View>
-          <Text style={{ marginTop: 12, marginBottom: 4 }}>Reminder Methods</Text>
+          )}
+          <Text style={{ marginTop: 12, marginBottom: 4, fontFamily: headerFont }}>Reminder Methods</Text>
           <View style={styles.row}> 
-            <Checkbox.Item label="Push notification" status={lpPush ? 'checked' : 'unchecked'} onPress={() => setLpPush(!lpPush)} />
-            <Checkbox.Item label="In-app tip" status={lpInApp ? 'checked' : 'unchecked'} onPress={() => setLpInApp(!lpInApp)} />
+            <Checkbox.Item label="Push notification" status={lpPush ? 'checked' : 'unchecked'} onPress={() => setLpPush(!lpPush)} labelStyle={{ fontSize: 13, fontWeight: '400' }} />
+            <Checkbox.Item label="In-app tip" status={lpInApp ? 'checked' : 'unchecked'} onPress={() => setLpInApp(!lpInApp)} labelStyle={{ fontSize: 13, fontWeight: '400' }} />
           </View>
-          {lpInfo ? <HelperText type="info">{lpInfo}</HelperText> : null}
+          {lpInfo ? <HelperText type="info" style={{ fontFamily: headerFont }}>{lpInfo}</HelperText> : null}
         </Card.Content>
-        <Card.Actions>
-          <Button mode="outlined" onPress={() => openScan('longPlay')}>Scan now</Button>
-          <Button mode="contained" onPress={onLpSave}>Save</Button>
+        <Card.Actions style={{ justifyContent: 'center' }}>
+          <Button mode="outlined" onPress={() => openScan('longPlay')} style={{ borderRadius: 20, marginRight: 8, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Scan</Button>
+          <Button mode="outlined" onPress={onLpSave} style={{ borderRadius: 20, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Save Changes</Button>
         </Card.Actions>
       </Card>
 
       {/* Inline: Idle Toy Reminder card */}
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
-        <Card.Title title="Idle Toy Reminder" subtitle="Notice toys not played for days" titleStyle={{ fontWeight: '700' }} />
-        <Card.Content>
-          <View style={styles.rowBetween}>
-            <Text>Master Switch</Text>
-            <Switch value={itEnabled} onValueChange={setItEnabled} />
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }]}> 
+          <Card.Title
+          title={<Text style={{ fontSize: 16, fontWeight: '700', fontFamily: headerFont, color: '#4ECDC4' }}>Idle Toy Reminder</Text>}
+          subtitle={<Text style={{ fontFamily: headerFont, color: theme.colors.onSurface, opacity: 0.7 }}>Detect idle toys</Text>}
+          left={(p) => <List.Icon {...p} icon="sleep" color="#4ECDC4" />}
+          right={(p) => <View style={{ marginRight: 8, alignItems: 'center', justifyContent: 'center' }}><MinimalSwitch val={itEnabled} onToggle={() => setItEnabled(!itEnabled)} /></View>}
+          />
+        <Card.Content style={{ paddingHorizontal: 16 }}>
+          <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontFamily: headerFont }}>Remind me after</Text>
+            <Text style={{ fontFamily: headerFont, color: theme.colors.onSurfaceVariant, fontSize: 12 }}>
+              Current: {parseInt(itDays || '0', 10) || 14} days
+            </Text>
           </View>
-          <Text style={{ marginTop: 12 }}>Idle duration</Text>
-          <View style={[styles.row, { marginTop: 8 }]}> 
-            <Button mode="outlined" compact onPress={() => setItDays('7')}>7 days</Button>
-            <Button mode="outlined" compact style={{ marginHorizontal: 8 }} onPress={() => setItDays('30')}>30 days</Button>
-            <Button mode="outlined" compact onPress={() => setItDays('90')}>90 days</Button>
-          </View>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>Custom (days)</Text>
-        <TextInput
-          value={itDays}
-          onChangeText={setItDays}
-          keyboardType="numeric"
-          style={{ width: 100, height: 40, borderRadius: 6 }}
-          contentStyle={{ textAlign: 'center' }}
-          dense
-        />
-          </View>
-          <Checkbox.Item label="Include helpful suggestion in reminders" status={itSmartSuggest ? 'checked' : 'unchecked'} onPress={() => setItSmartSuggest(!itSmartSuggest)} />
-          {itInfo ? <HelperText type="info">{itInfo}</HelperText> : null}
+          <SegmentedButtons
+            value={itSeg}
+            onValueChange={setItSeg}
+            style={{ marginTop: 8 }}
+            buttons={[
+              { value: '7', label: '7 days', style: { minWidth: 60, backgroundColor: theme.colors.surface }, labelStyle: { fontSize: 12, color: theme.colors.onSurface } },
+              { value: '14', label: '14 days', style: { minWidth: 68, backgroundColor: theme.colors.surface }, labelStyle: { fontSize: 12, color: theme.colors.onSurface } },
+              { value: '30', label: '30 days', style: { minWidth: 70, backgroundColor: theme.colors.surface }, labelStyle: { fontSize: 12, color: theme.colors.onSurface } },
+              { value: 'custom', label: 'Customize', style: { minWidth: 92, backgroundColor: theme.colors.surface }, labelStyle: { fontSize: 12, color: theme.colors.onSurface } },
+            ]}
+          />
+          {itSeg === 'custom' && (
+            <View style={[styles.rowBetween, { marginTop: 8 }]}>
+              <Text style={{ fontFamily: headerFont }}>Custom days</Text>
+              <TextInput
+                mode="outlined"
+                value={itDays}
+                onChangeText={(t) => setItDays(String(t || '').replace(/\D/g, ''))}
+                keyboardType="number-pad"
+                style={{ width: 120, height: 40, backgroundColor: theme.colors.surface }}
+                contentStyle={{ textAlign: 'center' }}
+                outlineColor={theme.colors.primary}
+                activeOutlineColor={theme.colors.primary}
+                right={<TextInput.Affix text="days" />}
+                dense
+              />
+            </View>
+          )}
+          <Checkbox.Item label="Include helpful suggestion in reminders" status={itSmartSuggest ? 'checked' : 'unchecked'} onPress={() => setItSmartSuggest(!itSmartSuggest)} labelStyle={{ fontSize: 13, fontWeight: '400' }} />
+          {itInfo ? <HelperText type="info" style={{ fontFamily: headerFont }}>{itInfo}</HelperText> : null}
         </Card.Content>
-        <Card.Actions>
-          <Button onPress={() => openScan('idleToy')} mode="outlined">Scan now</Button>
-          <Button onPress={onItSave} mode="contained">Save</Button>
+        <Card.Actions style={{ justifyContent: 'center' }}>
+          <Button mode="outlined" onPress={() => openScan('idleToy')} style={{ borderRadius: 20, marginRight: 8, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Scan</Button>
+          <Button mode="outlined" onPress={onItSave} style={{ borderRadius: 20, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Save Changes</Button>
         </Card.Actions>
       </Card>
 
       {/* Inline: Smart Tidy-up card */}
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
-        <Card.Title title="Smart Tidy-up" subtitle="Build a tidy-up habit at a fixed time" titleStyle={{ fontWeight: '700' }} />
-        <Card.Content>
-          <View style={styles.rowBetween}>
-            <Text>Master Switch</Text>
-            <Switch value={stEnabled} onValueChange={setStEnabled} />
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }]}> 
+          <Card.Title
+          title={<Text style={{ fontSize: 16, fontWeight: '700', fontFamily: headerFont, color: '#6A5ACD' }}>Smart Tidy-up</Text>}
+          subtitle={<Text style={{ fontFamily: headerFont, color: theme.colors.onSurface, opacity: 0.7 }}>Scheduled tidy-up habit</Text>}
+          left={(p) => <List.Icon {...p} icon="broom" color="#6A5ACD" />}
+          right={(p) => <View style={{ marginRight: 8, alignItems: 'center', justifyContent: 'center' }}><MinimalSwitch val={stEnabled} onToggle={() => setStEnabled(!stEnabled)} /></View>}
+          />
+        <Divider style={{ marginHorizontal: 16, opacity: 0.2 }} />
+        <Card.Content style={{ paddingHorizontal: 16 }}>
+          <View style={[styles.rowBetween, { marginTop: 12 }]}>
+            <Text style={{ fontFamily: headerFont }}>Daily tidy-up time</Text>
+            <TextInput
+              mode="outlined"
+              value={stTime}
+              onChangeText={setStTime}
+              placeholder="08:00 PM"
+              style={{ width: 110, height: 40, backgroundColor: theme.colors.surface }}
+              contentStyle={{ textAlign: 'center' }}
+              outlineColor={theme.colors.primary}
+              activeOutlineColor={theme.colors.primary}
+              right={<TextInput.Icon icon="clock-outline" />}
+            />
           </View>
-          <Text style={{ marginTop: 12 }}>Daily tidy-up time</Text>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>HH:MM</Text>
-        <TextInput
-          value={stTime}
-          onChangeText={setStTime}
-          placeholder="20:00"
-          style={{ width: 100, height: 40, borderRadius: 6 }}
-          contentStyle={{ textAlign: 'center' }}
-          dense
-        />
+          <Text style={{ marginTop: 12, fontFamily: headerFont }}>Repeat</Text>
+          <View style={[styles.row, { marginTop: 8, flexWrap: 'wrap' }]}> 
+            {['S','M','T','W','T','F','S'].map((d, idx) => {
+              const selected = !!stDays[idx];
+              return (
+                <TouchableOpacity
+                  key={`${d}-${idx}`}
+                  onPress={() => {
+                    const next = [...stDays]; next[idx] = !next[idx]; setStDays(next);
+                    const all = next.every(Boolean);
+                    const wk = next.slice(1,6).every(Boolean) && !next[0] && !next[6];
+                    const we = next[0] && next[6] && next.slice(1,6).every((v)=>!v);
+                    setStRepeat(all ? 'daily' : wk ? 'weekdays' : we ? 'weekends' : 'daily');
+                  }}
+                  style={{
+                    width: 32, height: 32, borderRadius: 16, borderWidth: 2,
+                    borderColor: theme.colors.primary,
+                    backgroundColor: selected ? theme.colors.primary : theme.colors.surfaceVariant,
+                    alignItems: 'center', justifyContent: 'center', marginRight: 8, marginBottom: 6
+                  }}
+                >
+                  <Text style={{ color: selected ? theme.colors.onPrimary : theme.colors.onSurface, fontSize: 12 }}>{d}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
-          <Text style={{ marginTop: 12 }}>Repeat</Text>
-          <View style={[styles.row, { marginTop: 8 }]}> 
-            <Chip selected={stRepeat==='daily'} onPress={() => setStRepeat('daily')} style={styles.chip}>Daily</Chip>
-            <Chip selected={stRepeat==='weekends'} onPress={() => setStRepeat('weekends')} style={styles.chip}>Weekends</Chip>
-            <Chip selected={stRepeat==='weekdays'} onPress={() => setStRepeat('weekdays')} style={styles.chip}>Weekdays</Chip>
+          <View style={{ marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: theme.colors.secondaryContainer }}>
+            <View style={styles.rowBetween}>
+              <Text style={{ fontFamily: headerFont }}>Do Not Disturb</Text>
+              <MinimalSwitch val={!!(stDndStart || stDndEnd)} onToggle={() => {
+                const enable = !(stDndStart || stDndEnd);
+                if (!enable) { setStDndStart(''); setStDndEnd(''); } else { setStDndStart('22:00'); setStDndEnd('07:00'); }
+              }} />
+            </View>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+              <View style={{ width: '46%', flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ fontFamily: headerFont }}>Start</Text>
+                <TextInput
+                  mode="outlined"
+                  value={stDndStart}
+                  onChangeText={setStDndStart}
+                  placeholder="10:00 PM"
+                  dense
+                  style={{ width: 104, height: 32, marginLeft: 2, backgroundColor: theme.colors.surface, paddingHorizontal: 0, paddingRight: 6 }}
+                  contentStyle={{ textAlign: 'left', paddingLeft: 16, paddingRight: 0, paddingVertical: 2 }}
+                  outlineColor={theme.colors.primary}
+                  activeOutlineColor={theme.colors.primary}
+                  right={<TextInput.Icon icon="clock-outline" />}
+                />
+              </View>
+              <Text style={{ width: '6%', textAlign: 'center', opacity: 0.8 }}>→</Text>
+              <View style={{ width: '46%', flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ fontFamily: headerFont }}>End</Text>
+                <TextInput
+                  mode="outlined"
+                  value={stDndEnd}
+                  onChangeText={setStDndEnd}
+                  placeholder="07:00 AM"
+                  dense
+                  style={{ width: 104, height: 32, marginLeft: 2, backgroundColor: theme.colors.surface, paddingHorizontal: 0, paddingRight: 6 }}
+                  contentStyle={{ textAlign: 'left', paddingLeft: 16, paddingRight: 0, paddingVertical: 2 }}
+                  outlineColor={theme.colors.primary}
+                  activeOutlineColor={theme.colors.primary}
+                  right={<TextInput.Icon icon="clock-outline" />}
+                />
+              </View>
+            </View>
           </View>
-          <Text style={{ marginTop: 12 }}>Do Not Disturb</Text>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>Start (HH:MM)</Text>
-        <TextInput
-          value={stDndStart}
-          onChangeText={setStDndStart}
-          placeholder="22:00"
-          style={{ width: 100, height: 40, borderRadius: 6 }}
-          contentStyle={{ textAlign: 'center' }}
-          dense
-        />
-          </View>
-          <View style={[styles.rowBetween, { marginTop: 8 }]}> 
-            <Text>End (HH:MM)</Text>
-        <TextInput
-          value={stDndEnd}
-          onChangeText={setStDndEnd}
-          placeholder="07:00"
-          style={{ width: 100, height: 40, borderRadius: 6 }}
-          contentStyle={{ textAlign: 'center' }}
-          dense
-        />
-          </View>
-          {stInfo ? <HelperText type="info">{stInfo}</HelperText> : null}
+          {stInfo ? <HelperText type="info" style={{ fontFamily: headerFont, marginTop: 8 }}>{stInfo}</HelperText> : null}
         </Card.Content>
-        <Card.Actions>
-          <Button mode="outlined" onPress={() => openScan('smartTidying')}>Scan now</Button>
-          <Button mode="contained" onPress={onStSave}>Save</Button>
+        <Card.Actions style={{ justifyContent: 'center' }}>
+          <Button mode="outlined" onPress={onStSave} style={{ borderRadius: 20, borderColor: theme.colors.primary }} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }} textColor={theme.colors.primary}>Save</Button>
         </Card.Actions>
       </Card>
 
       {/* Design sync section removed */}
 
-      {message && <Text style={[styles.message, { color: theme.colors.primary }]}>{message}</Text>}
+      {message && <Text style={[styles.message, { color: theme.colors.primary, fontFamily: headerFont }]}>{message}</Text>}
 
       {/* Scan results dialog */}
       <Portal>
         <Dialog visible={scanDialogOpen} onDismiss={closeScan} style={{ borderRadius: 10 }}>
-          <Dialog.Title style={{ fontSize: 16 }}>{scanTitle}</Dialog.Title>
+          <Dialog.Title style={{ fontSize: 16, fontFamily: headerFont }}>{scanTitle}</Dialog.Title>
           <Dialog.Content style={{ paddingHorizontal: 8 }}>
             <ScrollView style={{ maxHeight: 380 }} contentContainerStyle={{ paddingVertical: 4 }}>
               {scanItems.length === 0 ? (
-                <Text>No records yet. Please enable the corresponding reminder and try again after actual usage.</Text>
+                <Text style={{ fontFamily: headerFont }}>No records yet. Please enable the corresponding reminder and try again after actual usage.</Text>
               ) : (
                 scanItems.map((it) => {
                   const src = (it.source || '').toLowerCase();
                   if (src.startsWith('longplay')) {
+                    const { owner: ownerParsed, toy: toyParsed } = parseOwnerAndToy(it.body);
+                    const toy = toyParsed || getToyNameFromBody(it.body);
+                    const owner = ownerParsed;
+                    const top = [formatTime(it.timestamp), toy, owner].filter(Boolean).join(' · ');
+                    const minsMatch = (it.body || '').match(/(\d+)\s*minutes/i);
+                    const mins = minsMatch && minsMatch[1] ? parseInt(minsMatch[1], 10) : null;
+                    const second = toy && mins != null
+                      ? `${owner ? `${owner}'s ` : ''}${toy} has been playing for ${mins} minutes. Take a short break, drink some water, and rest your eyes.`
+                      : (String(it.body || '').replace(/^Friendly reminder:\s*/i, '').replace(/^温馨提示：\s*/i, ''));
                     return (
-                      <View key={it.id} style={{ marginBottom: 8 }}>
-                        {it.body ? <Text style={{ fontSize: 14 }}>{it.body}</Text> : null}
-                        <Text style={{ opacity: 0.7, fontSize: 12, marginTop: 2 }}>{formatTime(it.timestamp)} · Long Play</Text>
+                      <View key={it.id} style={{ marginBottom: 8, backgroundColor: 'rgba(255,255,255,0.7)', borderRadius: 12, padding: 8 }}>
+                        <Text style={{ fontSize: 14, fontFamily: headerFont }}>{top}</Text>
+                        <Text style={{ opacity: 0.9, fontSize: 12, marginTop: 4, fontFamily: headerFont }}>{second}</Text>
                       </View>
                     );
                   }
-                  const toy = getToyNameFromBody(it.body);
+                  const toy = getToyNameFromBody(it.body) || scanMeta[it.id]?.toy;
+                  const { owner: ownerParsed } = parseOwnerAndToy(it.body);
+                  const owner = ownerParsed || scanMeta[it.id]?.owner;
                   const title = toy ? `${toy}` : (it.title || 'Reminder');
-                  const desc = `${formatTime(it.timestamp)} · ${it.source || 'unknown'}` + (it.body ? `\n${it.body}` : '');
+                  const descTop = [formatTime(it.timestamp), toy, owner].filter(Boolean).join(' · ');
+                  const daysMatch = (it.body || '').match(/(\d+)\s*days/i);
+                  const days = daysMatch && daysMatch[1] ? parseInt(daysMatch[1], 10) : null;
+                  const second = toy && days != null
+                    ? `${toy} hasn't been played with for ${days} days. It's waiting for you!`
+                    : (String(it.body || '').replace(/^Friendly reminder:\s*/i, '').replace(/^温馨提示：\s*/i, ''));
+                  const desc = `${descTop}\n${second}`;
                   return (
-                    <List.Item
-                      key={it.id}
-                      title={title}
-                      description={desc}
-                      left={(p) => <List.Icon {...p} icon="history" />}
-                      style={{ paddingVertical: 4 }}
-                      titleStyle={{ fontSize: 14 }}
-                      descriptionNumberOfLines={4}
-                    />
+                    <View key={it.id} style={{ marginBottom: 8, backgroundColor: 'rgba(255,255,255,0.7)', borderRadius: 12, padding: 8 }}>
+                      <Text style={{ fontSize: 14, fontFamily: headerFont }}>{descTop}</Text>
+                      <Text style={{ opacity: 0.9, fontSize: 12, marginTop: 4, fontFamily: headerFont }}>{second}</Text>
+                    </View>
                   );
                 })
               )}
             </ScrollView>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={closeScan}>Close</Button>
+            <Button onPress={closeScan} labelStyle={{ fontFamily: headerFont }}>Close</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
     </ScrollView>
+    <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={2000} style={{ backgroundColor: theme.colors.secondaryContainer, alignSelf: 'center' }} wrapperStyle={{ position: 'absolute', top: '45%', left: 0, right: 0 }}>
+      <Text style={{ fontFamily: headerFont, color: theme.colors.onSecondaryContainer, textAlign: 'center' }}>{snackbarMsg}</Text>
+    </Snackbar>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 /* bg moved to gradient */ },
+  container: { flex: 1, padding: 8 /* bg moved to gradient */ },
   title: { /* color moved to theme */ },
   card: { marginBottom: 12 },
   message: { marginTop: 8 /* color moved to theme */ },

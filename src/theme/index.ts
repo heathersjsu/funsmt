@@ -1,5 +1,6 @@
 import { MD3LightTheme as DefaultTheme } from 'react-native-paper';
 import type { MD3Theme } from 'react-native-paper';
+import { Platform } from 'react-native';
 import { supabase } from '../supabaseClient';
 
 export function buildKidTheme(overrides?: Partial<MD3Theme['colors']> & { roundness?: number }): MD3Theme {
@@ -42,18 +43,21 @@ export function buildFoodTheme(overrides?: Partial<MD3Theme['colors']> & { round
 
 // Cartoon/Kid-friendly playful theme: aligned with ToyListScreen palette
 export function buildCartoonTheme(overrides?: Partial<MD3Theme['colors']> & { roundness?: number }): MD3Theme {
-  // Unified kid-friendly fonts: Baloo 2 for titles, Nunito for body
+  // Unified font configuration matching Home/ToyList
+  const fontHeader = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+  const fontBody = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif', default: 'System' });
+
   const fonts = {
     ...DefaultTheme.fonts,
-    displayLarge: { ...DefaultTheme.fonts.displayLarge, fontFamily: 'Baloo 2', fontWeight: '700' },
-    headlineLarge: { ...DefaultTheme.fonts.headlineLarge, fontFamily: 'Baloo 2', fontWeight: '700' },
-    titleLarge: { ...DefaultTheme.fonts.titleLarge, fontFamily: 'Baloo 2', fontWeight: '700' },
-    titleMedium: { ...DefaultTheme.fonts.titleMedium, fontFamily: 'Baloo 2', fontWeight: '700' },
-    titleSmall: { ...DefaultTheme.fonts.titleSmall, fontFamily: 'Baloo 2', fontWeight: '700' },
-    labelLarge: { ...DefaultTheme.fonts.labelLarge, fontFamily: 'Nunito', fontWeight: '600' },
-    bodyLarge: { ...DefaultTheme.fonts.bodyLarge, fontFamily: 'Nunito', fontWeight: '400' },
-    bodyMedium: { ...DefaultTheme.fonts.bodyMedium, fontFamily: 'Nunito', fontWeight: '400' },
-    bodySmall: { ...DefaultTheme.fonts.bodySmall, fontFamily: 'Nunito', fontWeight: '400' },
+    displayLarge: { ...DefaultTheme.fonts.displayLarge, fontFamily: fontHeader, fontWeight: '700' },
+    headlineLarge: { ...DefaultTheme.fonts.headlineLarge, fontFamily: fontHeader, fontWeight: '700' },
+    titleLarge: { ...DefaultTheme.fonts.titleLarge, fontFamily: fontHeader, fontWeight: '700' },
+    titleMedium: { ...DefaultTheme.fonts.titleMedium, fontFamily: fontHeader, fontWeight: '600' },
+    titleSmall: { ...DefaultTheme.fonts.titleSmall, fontFamily: fontHeader, fontWeight: '600' },
+    labelLarge: { ...DefaultTheme.fonts.labelLarge, fontFamily: fontBody, fontWeight: '600' },
+    bodyLarge: { ...DefaultTheme.fonts.bodyLarge, fontFamily: fontBody },
+    bodyMedium: { ...DefaultTheme.fonts.bodyMedium, fontFamily: fontBody },
+    bodySmall: { ...DefaultTheme.fonts.bodySmall, fontFamily: fontBody },
   } as MD3Theme['fonts'];
   const colors = {
     ...DefaultTheme.colors,

@@ -66,10 +66,15 @@ class ScreenErrorBoundary extends React.Component<any, { hasError: boolean; erro
       return (
         <View style={{ flex: 1, padding: 16 }}>
           <Card style={{ borderRadius: 18 }}>
-            <Card.Title title="Failed to open page" subtitle="Screen error" left={(p) => <List.Icon {...p} icon="alert" />} />
+            <Card.Title 
+              title="Failed to open page" 
+              subtitle="Screen error" 
+              titleStyle={{ fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : Platform.OS === 'android' ? 'sans-serif-medium' : 'System' }}
+              left={(p) => <List.Icon {...p} icon="alert" />} 
+            />
             <Card.Content>
-              <Text style={{ marginBottom: 8 }}>An unexpected error occurred while opening the page.</Text>
-              <Text style={{ color: '#b00020', marginBottom: 12 }}>{String(this.state.error?.message || this.state.error || '')}</Text>
+              <Text style={{ marginBottom: 8, fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : Platform.OS === 'android' ? 'sans-serif-medium' : 'System' }}>An unexpected error occurred while opening the page.</Text>
+              <Text style={{ color: '#b00020', marginBottom: 12, fontFamily: Platform.OS === 'ios' ? 'Arial Rounded MT Bold' : Platform.OS === 'android' ? 'sans-serif-medium' : 'System' }}>{String(this.state.error?.message || this.state.error || '')}</Text>
               <Button mode="contained" onPress={() => (window?.history?.length ? window.history.back() : null)}>Back</Button>
             </Card.Content>
           </Card>
@@ -80,8 +85,9 @@ class ScreenErrorBoundary extends React.Component<any, { hasError: boolean; erro
   }
 }
 export default function DeviceProvisioningScreen() {
-  const theme = useTheme();
-  const navigation = useNavigation<any>();
+  const theme = useTheme();
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+  const navigation = useNavigation<any>();
   const [scanning, setScanning] = useState(false);
   const [devices, setDevices] = useState<BleDevice[]>([]);
   const [status, setStatus] = useState<string>('');
@@ -1634,22 +1640,22 @@ const scanAndShowPinmeList = async () => {
     {/* 解决 Portal 在未包裹 Provider 时的渲染错误：此处为屏幕级兜底 Provider */}
     <PaperProvider>
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+      <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={[styles.scrollContent, Platform.OS === 'web' && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }]} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
       {Platform.OS === 'web' && (
-        <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}>
+        <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }]}>
           <Card.Title
-            title={<Text>Add Device (Web)</Text>}
-            subtitle={<Text>BLE provisioning is only supported on Android/iOS</Text>}
+            title={<Text style={{ fontFamily: headerFont }}>Add Device (Web)</Text>}
+            subtitle={<Text style={{ fontFamily: headerFont }}>BLE provisioning is only supported on Android/iOS</Text>}
             left={(p) => <List.Icon {...p} icon="information" />}
           />
           <Card.Content>
-            <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8 }}>
+            <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8, fontFamily: headerFont }}>
               You are on the web. Browsers do not support Bluetooth scanning/provisioning. Please use the mobile app (Android/iOS Dev Client or release build) and open "Add Device".
             </Text>
-            <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8 }}>
+            <Text style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8, fontFamily: headerFont }}>
               If you need to open the device configuration page (AP/mDNS) via the web, you can try the button below.
             </Text>
-            <Button mode="outlined" onPress={openWebConfig}>Open device Web config</Button>
+            <Button mode="outlined" onPress={openWebConfig} labelStyle={{ fontFamily: headerFont }}>Open device Web config</Button>
           </Card.Content>
         </Card>
       )}
@@ -1660,49 +1666,49 @@ const scanAndShowPinmeList = async () => {
       {/* Single card mode: content merged below */}
       <Card style={[
         styles.card,
-        { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }
+        { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }
       ]}>
         <Card.Content>
           <Banner visible style={{ marginBottom: 8 }}>
-            <Text>Please power on the device and keep it close to your phone.</Text>
+            <Text style={{ fontFamily: headerFont }}>Please power on the device and keep it close to your phone.</Text>
           </Banner>
           {/* Device basic info */}
-          <TextInput label="Device name" value={deviceName} onChangeText={setDeviceName} style={[styles.input, styles.flatFill]} mode="flat" />
+          <TextInput label="Device name" value={deviceName} onChangeText={setDeviceName} style={[styles.input, styles.flatFill]} mode="flat" contentStyle={{ fontFamily: headerFont }} />
           <Menu
             visible={locMenuOpen}
             onDismiss={() => setLocMenuOpen(false)}
             anchor={
               <Pressable onPress={() => { if (!locLockRef.current) setLocMenuOpen(true); }}>
-                <TextInput label="Location" value={location} onChangeText={setLocation} style={[styles.input, styles.flatFill]} mode="flat" onFocus={() => { if (!locLockRef.current) setLocMenuOpen(true); }} />
+                <TextInput label="Location" value={location} onChangeText={setLocation} style={[styles.input, styles.flatFill]} mode="flat" contentStyle={{ fontFamily: headerFont }} onFocus={() => { if (!locLockRef.current) setLocMenuOpen(true); }} />
               </Pressable>
             }
           >
-            {DEFAULT_LOCATIONS.map((loc) => (
-            <Menu.Item key={`def-${loc}`} title={loc} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
-            ))}
-            {locSuggestions.filter(s => !DEFAULT_LOCATIONS.includes(s)).map((loc) => (
-              <Menu.Item key={loc} title={loc} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
-            ))}
-          </Menu>
+            {DEFAULT_LOCATIONS.map((loc) => (
+            <Menu.Item key={`def-${loc}`} title={loc} titleStyle={{ fontFamily: headerFont }} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
+            ))}
+            {locSuggestions.filter(s => !DEFAULT_LOCATIONS.includes(s)).map((loc) => (
+              <Menu.Item key={loc} title={loc} titleStyle={{ fontFamily: headerFont }} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
+            ))}
+          </Menu>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
             <TextInput
               label="Device ID"
               value={toDisplaySuffixFromDeviceId(deviceId) || ''}
               onChangeText={(t) => setDeviceId(toDeviceId(t))}
-              style={[styles.input, styles.flatFill, { flex: 1, marginBottom: 0 }]} mode="flat"
+              style={[styles.input, styles.flatFill, { flex: 1, marginBottom: 0 }]} mode="flat" contentStyle={{ fontFamily: headerFont }}
             />
-            <Button mode="outlined" onPress={scanAndShowPinmeList} compact style={[styles.smallButton, styles.whiteOutlined, { marginLeft: 8 }]} contentStyle={{ height: 40 }} disabled={!supportsNativeModules} loading={scanLoading}>Scan</Button>
+            <Button mode="outlined" onPress={scanAndShowPinmeList} compact style={[styles.smallButton, styles.whiteOutlined, { marginLeft: 8 }]} contentStyle={{ height: 40 }} disabled={!supportsNativeModules} loading={scanLoading} labelStyle={{ fontFamily: headerFont }}>Scan</Button>
           </View>
           {/* Wi‑Fi controls */}
           <View style={{ flexDirection: 'row', justifyContent: 'flex-start', marginTop: 4, marginBottom: 16 }}>
-            <Button mode="outlined" compact onPress={scanWifiListViaBle} style={[styles.smallButton, styles.whiteOutlined]} contentStyle={{ height: 40 }} disabled={!supportsNativeModules}>Scan Wi‑Fi</Button>
+            <Button mode="outlined" compact onPress={scanWifiListViaBle} style={[styles.smallButton, styles.whiteOutlined]} contentStyle={{ height: 40 }} disabled={!supportsNativeModules} labelStyle={{ fontFamily: headerFont }}>Scan Wi‑Fi</Button>
           </View>
           {showPasswordInput && (
             <View>
-              <TextInput label="Wi‑Fi name" value={ssid} onChangeText={setSsid} style={[styles.input, styles.flatFill]} mode="flat" />
-              <TextInput label="Password" placeholder="password" value={password} onChangeText={setPassword} secureTextEntry style={[styles.input, styles.flatFill]} mode="flat" disabled={selectedWifiEnc === 'OPEN'} />
+              <TextInput label="Wi‑Fi name" value={ssid} onChangeText={setSsid} style={[styles.input, styles.flatFill]} mode="flat" contentStyle={{ fontFamily: headerFont }} />
+              <TextInput label="Password" placeholder="password" value={password} onChangeText={setPassword} secureTextEntry style={[styles.input, styles.flatFill]} mode="flat" disabled={selectedWifiEnc === 'OPEN'} contentStyle={{ fontFamily: headerFont }} />
           <View style={{ flexDirection: 'row', justifyContent: 'flex-start', marginTop: 4 }}>
-            <Button mode="outlined" compact onPress={startProvisioning} loading={connecting} disabled={connecting} style={[styles.smallButton, styles.whiteOutlined]} contentStyle={{ height: 40 }}>Connect</Button>
+            <Button mode="outlined" compact onPress={startProvisioning} loading={connecting} disabled={connecting} style={[styles.smallButton, styles.whiteOutlined]} contentStyle={{ height: 40 }} labelStyle={{ fontFamily: headerFont }}>Connect</Button>
           </View>
         </View>
       )}
@@ -1711,9 +1717,9 @@ const scanAndShowPinmeList = async () => {
       {/* Progress card removed */}
       {/* Error banner (shown when saving fails) */}
       {error && (
-        <Card style={[styles.card, { backgroundColor: theme.colors.errorContainer, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}>
+        <Card style={[styles.card, { backgroundColor: theme.colors.errorContainer, borderWidth: 0, borderRadius: 20 }]}>
           <Card.Content>
-            <Text style={{ color: theme.colors.onErrorContainer }}>{error}</Text>
+            <Text style={{ color: theme.colors.onErrorContainer, fontFamily: headerFont }}>{error}</Text>
           </Card.Content>
         </Card>
       )}
@@ -1721,8 +1727,8 @@ const scanAndShowPinmeList = async () => {
         <OrangeCapsuleButton title="Save" onPress={saveDeviceInfo} loading={sending} disabled={connecting} style={{ flex: 1 }} />
       </View>
       {/* Debug Log under Save button */}
-      <Card style={[styles.card, { marginTop: 8, backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}>
-        <Card.Title title="Debug log" subtitle="Key steps and device responses will appear here" />
+      <Card style={[styles.card, { marginTop: 8, backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }]}>
+        <Card.Title title="Debug log" titleStyle={{ fontFamily: headerFont }} subtitle="Key steps and device responses will appear here" />
         <Card.Content>
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: 8 }}>
             <Button mode="text" compact onPress={() => setStatus('')}>Clear</Button>
@@ -1742,22 +1748,23 @@ const scanAndShowPinmeList = async () => {
       </Card>
       </ScrollView>
       {/* Connected/Success toast */}
-      <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={1000}>
+      <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={1000} style={{ backgroundColor: theme.colors.secondaryContainer, alignSelf: 'center' }} wrapperStyle={{ position: 'absolute', top: '45%', left: 0, right: 0 }}>
         {/* RN requires text to be wrapped within <Text> */}
-        <Text>{snackbarMsg}</Text>
+        <Text style={{ fontFamily: headerFont, color: theme.colors.onSecondaryContainer, textAlign: 'center' }}>{snackbarMsg}</Text>
       </Snackbar>
       <Portal>
         {/* Device picker dialog */}
         <Dialog visible={pickerVisible} onDismiss={closePicker} style={{ borderRadius: 16 }}>
           <Dialog.Content>
             {pinmeList.length === 0 ? (
-              <Text>Scanning nearby pinme devices…</Text>
+              <Text style={{ fontFamily: headerFont }}>Scanning nearby pinme devices…</Text>
             ) : (
               pinmeList.map((d) => (
                 <List.Item
                   key={d.id}
                   title={d.name || 'pinme'}
-                  description={d.rssi != null ? (<Text>Signal: {d.rssi}</Text>) : undefined}
+                  titleStyle={{ fontFamily: headerFont }}
+                  description={d.rssi != null ? (<Text style={{ fontFamily: headerFont }}>Signal: {d.rssi}</Text>) : undefined}
                   left={(p) => <List.Icon {...p} icon="bluetooth" />}
                   onPress={() => onPickPinmeDevice(d)}
                 />
@@ -1765,20 +1772,21 @@ const scanAndShowPinmeList = async () => {
             )}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={closePicker}>Close</Button>
+            <Button onPress={closePicker} labelStyle={{ fontFamily: headerFont }}>Close</Button>
           </Dialog.Actions>
         </Dialog>
         {/* Wi‑Fi picker dialog */}
         <Dialog visible={wifiPickerVisible} onDismiss={() => setWifiPickerVisible(false)} style={{ borderRadius: 16 }}>
           <Dialog.Content>
             {wifiList.length === 0 ? (
-              <Text>Scanning nearby Wi‑Fi… (If the list is empty, a scan module may be missing; only the current connection will be shown)</Text>
+              <Text style={{ fontFamily: headerFont }}>Scanning nearby Wi‑Fi… (If the list is empty, a scan module may be missing; only the current connection will be shown)</Text>
             ) : (
               wifiList.map((w, idx) => (
                 <List.Item
                   key={`${w.ssid}-${idx}`}
                   title={w.ssid}
-                  description={typeof w.strength === 'number' ? (<Text>Signal: {w.strength}</Text>) : undefined}
+                  titleStyle={{ fontFamily: headerFont }}
+                  description={typeof w.strength === 'number' ? (<Text style={{ fontFamily: headerFont }}>Signal: {w.strength}</Text>) : undefined}
                   left={(p) => <List.Icon {...p} icon="wifi" />}
                   onPress={() => onPickWifi(w.ssid)}
                 />
@@ -1786,14 +1794,14 @@ const scanAndShowPinmeList = async () => {
             )}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setWifiPickerVisible(false)}>Close</Button>
+            <Button onPress={() => setWifiPickerVisible(false)} labelStyle={{ fontFamily: headerFont }}>Close</Button>
           </Dialog.Actions>
         </Dialog>
         {/* Wi‑Fi list from device (WIFI_LIST via BLE) */}
         <Dialog visible={wifiBlePickerVisible} onDismiss={() => setWifiBlePickerVisible(false)} style={{ borderRadius: 16 }}>
           <Dialog.Content>
             {wifiItemsBle.length === 0 ? (
-              <Text>Waiting for the device to return the list…</Text>
+              <Text style={{ fontFamily: headerFont }}>Waiting for the device to return the list…</Text>
             ) : (
               wifiItemsBle
                 .sort((a,b) => b.rssi - a.rssi)
@@ -1802,7 +1810,8 @@ const scanAndShowPinmeList = async () => {
                   <List.Item
                     key={`${item.ssid}-${item.rssi}`}
                     title={item.ssid || '(Hidden SSID)'}
-                    description={<Text>Signal: {item.rssi} | Encryption: {item.enc}</Text>}
+                    titleStyle={{ fontFamily: headerFont }}
+                    description={<Text style={{ fontFamily: headerFont }}>Signal: {item.rssi} | Encryption: {item.enc}</Text>}
                     left={(p) => <List.Icon {...p} icon="wifi" />}
                     onPress={() => onPickWifiBle(item.ssid, item.enc)}
                   />
@@ -1810,13 +1819,13 @@ const scanAndShowPinmeList = async () => {
             )}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setWifiBlePickerVisible(false)}>Close</Button>
+            <Button onPress={() => setWifiBlePickerVisible(false)} labelStyle={{ fontFamily: headerFont }}>Close</Button>
           </Dialog.Actions>
         </Dialog>
         <Dialog visible={scanningQR} onDismiss={() => setScanningQR(false)} style={{ borderRadius: 16 }}>
           <Dialog.Content>
             {hasCamPermission === false ? (
-              <Text style={{ color: theme.colors.error }}>Camera permission not granted</Text>
+              <Text style={{ color: theme.colors.error, fontFamily: headerFont }}>Camera permission not granted</Text>
             ) : (
               <View style={{ height: 260 }}>
                 {camModuleRef.current ? (
@@ -1829,13 +1838,13 @@ const scanAndShowPinmeList = async () => {
                     barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                   />
                 ) : (
-                  <Text>Loading camera…</Text>
+                  <Text style={{ fontFamily: headerFont }}>Loading camera…</Text>
                 )}
               </View>
             )}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setScanningQR(false)}>Close</Button>
+            <Button onPress={() => setScanningQR(false)} labelStyle={{ fontFamily: headerFont }}>Close</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -1847,10 +1856,11 @@ const scanAndShowPinmeList = async () => {
 // Gradient orange capsule button for primary CTA
 function OrangeCapsuleButton({ title, onPress, loading, disabled, style }: { title: string; onPress: () => void; loading?: boolean; disabled?: boolean; style?: any }) {
   const theme = useTheme();
+  const font = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
   return (
     <Pressable onPress={disabled ? undefined : onPress} style={[{ borderRadius: 28, overflow: 'hidden' }, style]} disabled={disabled}>
       <LinearGradient colors={orangeCapsuleGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ paddingVertical: 12, alignItems: 'center', justifyContent: 'center' }}>
-        <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 16 }}>{loading ? 'Saving…' : title}</Text>
+        <Text style={{ color: '#FFFFFF', fontWeight: '600', fontSize: 16, fontFamily: font }}>{loading ? 'Saving…' : title}</Text>
       </LinearGradient>
     </Pressable>
   );

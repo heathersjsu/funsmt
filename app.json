@@ -27,6 +27,7 @@
       "INTERNET",
       "NFC",
       "RECORD_AUDIO",
+      "MODIFY_AUDIO_SETTINGS",
       // BLE & Wi‑Fi related permissions
       "BLUETOOTH",
       "BLUETOOTH_ADMIN",
@@ -49,6 +50,7 @@
     },
     "plugins": [
       "expo-dev-client",
+      "expo-font",
       "expo-secure-store",
       [
         "expo-build-properties",

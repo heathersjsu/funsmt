@@ -82,10 +82,7 @@ const styles = StyleSheet.create({
       web: 100,  // Web more compact
       default: 120,
     }),
-    maxWidth: Platform.select({
-      web: 140,  // Web max width limit
-      default: undefined,
-    }),
+    maxWidth: undefined,
   },
   content: {
     alignItems: 'center',

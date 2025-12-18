@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import { View, StyleSheet, ScrollView, RefreshControl, Platform } from 'react-native';
 import { Text, Card, List, Divider, useTheme, IconButton } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -98,19 +98,25 @@ export default function DeviceManagementScreen({ navigation }: Props) {
     }
   };
 
+  const isWeb = Platform.OS === 'web';
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
       <ScrollView
         style={[styles.container, { backgroundColor: 'transparent' }]}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+        ]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {/* Title removed per request; restore readers list with online/offline sections */}
 
         {/* Devices Section with online/offline grouping, aligned with Supabase 'devices' table */}
-        <Card style={[styles.cardSection, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
+        <Card style={[styles.cardSection, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 20 }]}> 
           <Card.Content>
-            <List.Subheader style={{ color: theme.colors.onSurface }}>Online</List.Subheader>
+            <List.Subheader style={{ color: theme.colors.onSurface, fontFamily: headerFont }}>Online</List.Subheader>
             {onlineDevices.length === 0 ? (
               <Text style={{ color: theme.colors.onSurfaceVariant }}>No online devices</Text>
             ) : (
@@ -119,7 +125,7 @@ export default function DeviceManagementScreen({ navigation }: Props) {
                   <List.Item
                     title={device.name || device.device_id}
                     description={`${device.location || 'Unknown'} • last seen ${formatAgo(device.last_seen || undefined)}${device.wifi_ssid ? ` • SSID: ${device.wifi_ssid}` : ''}${typeof device.wifi_signal === 'number' ? ` • Signal: ${device.wifi_signal}` : ''}`}
-                    titleStyle={{ color: theme.colors.onSurface }}
+                    titleStyle={{ color: theme.colors.onSurface, fontFamily: headerFont }}
                     descriptionStyle={{ color: theme.colors.onSurfaceVariant }}
                     titleNumberOfLines={2}
                     descriptionNumberOfLines={2}
@@ -139,7 +145,7 @@ export default function DeviceManagementScreen({ navigation }: Props) {
               ))
             )}
             <Divider style={styles.divider} />
-            <List.Subheader style={{ color: theme.colors.onSurface }}>Offline</List.Subheader>
+            <List.Subheader style={{ color: theme.colors.onSurface, fontFamily: headerFont }}>Offline</List.Subheader>
             {offlineDevices.length === 0 ? (
               <Text style={{ color: theme.colors.onSurfaceVariant }}>No offline devices</Text>
             ) : (
@@ -148,7 +154,7 @@ export default function DeviceManagementScreen({ navigation }: Props) {
                   <List.Item
                     title={device.name || device.device_id}
                     description={`${device.location || 'Unknown'} • last seen ${formatAgo(device.last_seen || undefined)}${device.wifi_ssid ? ` • SSID: ${device.wifi_ssid}` : ''}${typeof device.wifi_signal === 'number' ? ` • Signal: ${device.wifi_signal}` : ''}`}
-                    titleStyle={{ color: theme.colors.onSurface }}
+                    titleStyle={{ color: theme.colors.onSurface, fontFamily: headerFont }}
                     descriptionStyle={{ color: theme.colors.onSurfaceVariant }}
                     titleNumberOfLines={2}
                     descriptionNumberOfLines={2}
@@ -172,14 +178,14 @@ export default function DeviceManagementScreen({ navigation }: Props) {
 
         {/* Error/Message Display */}
         {error && (
-          <Card style={[styles.cardSection, { backgroundColor: theme.colors.errorContainer, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
+          <Card style={[styles.cardSection, { backgroundColor: theme.colors.errorContainer, borderWidth: 0, borderRadius: 20 }]}> 
             <Card.Content>
               <Text style={{ color: theme.colors.onErrorContainer }}>{error}</Text>
             </Card.Content>
           </Card>
         )}
         {message && (
-          <Card style={[styles.cardSection, { backgroundColor: theme.colors.primaryContainer, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }]}> 
+          <Card style={[styles.cardSection, { backgroundColor: theme.colors.primaryContainer, borderWidth: 0, borderRadius: 20 }]}> 
             <Card.Content>
               <Text style={{ color: theme.colors.onPrimaryContainer }}>{message}</Text>
             </Card.Content>

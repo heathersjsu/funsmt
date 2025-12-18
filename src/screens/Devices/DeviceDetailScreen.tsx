@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
+import { View, StyleSheet, ScrollView, Platform } from 'react-native';
 import { Text, Card, TextInput, Button, Switch, Divider, List, HelperText, useTheme } from 'react-native-paper';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { supabase } from '../../supabaseClient';
@@ -95,76 +95,85 @@ export default function DeviceDetailScreen({ route }: Props) {
     if (found.length === 0) setMessage('No devices found on LAN (Expo Go environment or mDNS service not enabled)');
   };
 
-  return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }] }>
-      <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.primary }]}>Device Details</Text>
-      <Text style={{ marginBottom: 8 }}>ID: {deviceId}</Text>
+  const isWeb = Platform.OS === 'web';
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}> 
-        <Card.Title title="Device Status" right={() => (
-          <Button compact onPress={loadDeviceRow}>Refresh</Button>
+  return (
+    <ScrollView 
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={[
+        { paddingBottom: 24 },
+        isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+      ]}
+    >
+      <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.primary, fontFamily: headerFont }]}>Device Details</Text>
+      <Text style={{ marginBottom: 8, fontFamily: headerFont }}>ID: {deviceId}</Text>
+
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}> 
+        <Card.Title title="Device Status" titleStyle={{ fontFamily: headerFont }} right={() => (
+          <Button compact onPress={loadDeviceRow} labelStyle={{ fontFamily: headerFont }}>Refresh</Button>
         )} />
         <Card.Content>
           {!deviceRow ? (
-            <Text>No device row</Text>
+            <Text style={{ fontFamily: headerFont }}>No device row</Text>
           ) : (
             <View style={{ gap: 6 }}>
-              <Text>Status: {deviceRow.status || '-'}</Text>
-              <Text>Last seen: {deviceRow.last_seen ? new Date(deviceRow.last_seen).toLocaleString() : '-'}</Text>
-              <Text>Wi‑Fi: {deviceRow.wifi_ssid || '-'} · RSSI={typeof deviceRow.wifi_signal==='number'? deviceRow.wifi_signal : '-'}</Text>
+              <Text style={{ fontFamily: headerFont }}>Status: {deviceRow.status || '-'}</Text>
+              <Text style={{ fontFamily: headerFont }}>Last seen: {deviceRow.last_seen ? new Date(deviceRow.last_seen).toLocaleString() : '-'}</Text>
+              <Text style={{ fontFamily: headerFont }}>Wi‑Fi: {deviceRow.wifi_ssid || '-'} · RSSI={typeof deviceRow.wifi_signal==='number'? deviceRow.wifi_signal : '-'}</Text>
               <Divider style={{ marginVertical: 6 }} />
-              <Text>Firmware: {deviceRow.fw_version || '-'}</Text>
-              <Text>Uptime: {typeof deviceRow.uptime_s==='number' ? `${deviceRow.uptime_s}s` : '-'}</Text>
-              <Text>Free heap: {typeof deviceRow.free_heap==='number' ? `${deviceRow.free_heap} B` : '-'}</Text>
+              <Text style={{ fontFamily: headerFont }}>Firmware: {deviceRow.fw_version || '-'}</Text>
+              <Text style={{ fontFamily: headerFont }}>Uptime: {typeof deviceRow.uptime_s==='number' ? `${deviceRow.uptime_s}s` : '-'}</Text>
+              <Text style={{ fontFamily: headerFont }}>Free heap: {typeof deviceRow.free_heap==='number' ? `${deviceRow.free_heap} B` : '-'}</Text>
             </View>
           )}
         </Card.Content>
       </Card>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
-        <Card.Title title="Hardware Config" />
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
+        <Card.Title title="Hardware Config" titleStyle={{ fontFamily: headerFont }} />
         <Card.Content>
-          <TextInput label="Name" mode="outlined" value={name} onChangeText={setName} style={styles.input} />
-          <TextInput label="Location" mode="outlined" value={location} onChangeText={setLocation} style={styles.input} />
-          <View style={styles.row}><Text>Read Power</Text>
+          <TextInput label="Name" mode="outlined" value={name} onChangeText={setName} style={styles.input} contentStyle={{ fontFamily: headerFont }} />
+          <TextInput label="Location" mode="outlined" value={location} onChangeText={setLocation} style={styles.input} contentStyle={{ fontFamily: headerFont }} />
+          <View style={styles.row}><Text style={{ fontFamily: headerFont }}>Read Power</Text>
             <View style={styles.row}>
-              <Button mode={readPower==='low'?'contained':'outlined'} onPress={() => setReadPower('low')}>Low</Button>
-              <Button style={{ marginLeft: 6 }} mode={readPower==='medium'?'contained':'outlined'} onPress={() => setReadPower('medium')}>Medium</Button>
-              <Button style={{ marginLeft: 6 }} mode={readPower==='high'?'contained':'outlined'} onPress={() => setReadPower('high')}>High</Button>
+              <Button mode={readPower==='low'?'contained':'outlined'} onPress={() => setReadPower('low')} labelStyle={{ fontFamily: headerFont }}>Low</Button>
+              <Button style={{ marginLeft: 6 }} mode={readPower==='medium'?'contained':'outlined'} onPress={() => setReadPower('medium')} labelStyle={{ fontFamily: headerFont }}>Medium</Button>
+              <Button style={{ marginLeft: 6 }} mode={readPower==='high'?'contained':'outlined'} onPress={() => setReadPower('high')} labelStyle={{ fontFamily: headerFont }}>High</Button>
             </View>
           </View>
-          <TextInput label="Scan Interval (ms)" mode="outlined" value={String(scanInterval)} keyboardType="numeric" onChangeText={(t)=>setScanInterval(Number(t)||0)} style={styles.input} />
-          <View style={styles.row}><Text>Auto Scan</Text><Switch value={autoScan} onValueChange={setAutoScan} /></View>
-          <View style={styles.row}><Text>Beep On Read</Text><Switch value={beepOn} onValueChange={setBeepOn} /></View>
+          <TextInput label="Scan Interval (ms)" mode="outlined" value={String(scanInterval)} keyboardType="numeric" onChangeText={(t)=>setScanInterval(Number(t)||0)} style={styles.input} contentStyle={{ fontFamily: headerFont }} />
+          <View style={styles.row}><Text style={{ fontFamily: headerFont }}>Auto Scan</Text><Switch value={autoScan} onValueChange={setAutoScan} /></View>
+          <View style={styles.row}><Text style={{ fontFamily: headerFont }}>Beep On Read</Text><Switch value={beepOn} onValueChange={setBeepOn} /></View>
           <View style={styles.row}>
-            <Button mode="contained" onPress={saveConfig}>Save</Button>
-            {message && <HelperText type="info" style={{ marginLeft: 8 }}>{message}</HelperText>}
-            {error && <HelperText type="error" style={{ marginLeft: 8 }}>{error}</HelperText>}
+            <Button mode="contained" onPress={saveConfig} labelStyle={{ fontFamily: headerFont }}>Save</Button>
+            {message && <HelperText type="info" style={{ marginLeft: 8, fontFamily: headerFont }}>{message}</HelperText>}
+            {error && <HelperText type="error" style={{ marginLeft: 8, fontFamily: headerFont }}>{error}</HelperText>}
           </View>
         </Card.Content>
       </Card>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
-        <Card.Title title="Recent Events" right={() => (
-          <Button compact onPress={loadEvents}>Refresh</Button>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
+        <Card.Title title="Recent Events" titleStyle={{ fontFamily: headerFont }} right={() => (
+          <Button compact onPress={loadEvents} labelStyle={{ fontFamily: headerFont }}>Refresh</Button>
         )} />
         <Card.Content>
-          {events.length === 0 ? <Text>No events</Text> : (
+          {events.length === 0 ? <Text style={{ fontFamily: headerFont }}>No events</Text> : (
             events.map(e => (
-              <List.Item key={e.id} title={prettyEvent(e)} description={`type=${e.event_type}`} />
+              <List.Item key={e.id} title={prettyEvent(e)} description={`type=${e.event_type}`} titleStyle={{ fontFamily: headerFont }} descriptionStyle={{ fontFamily: headerFont }} />
             ))
           )}
         </Card.Content>
       </Card>
 
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
-        <Card.Title title="LAN Discovery (mDNS)" right={() => (
-          <Button compact onPress={onDiscover} loading={discovering}>Scan</Button>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
+        <Card.Title title="LAN Discovery (mDNS)" titleStyle={{ fontFamily: headerFont }} right={() => (
+          <Button compact onPress={onDiscover} loading={discovering} labelStyle={{ fontFamily: headerFont }}>Scan</Button>
         )} />
         <Card.Content>
-          {lanDevices.length === 0 ? <Text>No devices found</Text> : (
+          {lanDevices.length === 0 ? <Text style={{ fontFamily: headerFont }}>No devices found</Text> : (
             lanDevices.map((d, idx) => (
-              <List.Item key={`${d.ip}-${idx}`} title={`${d.name || 'Device'} · ${d.ip || d.host || ''}:${d.port || 80}`} description={d.fullName || ''} />
+              <List.Item key={`${d.ip}-${idx}`} title={`${d.name || 'Device'} · ${d.ip || d.host || ''}:${d.port || 80}`} description={d.fullName || ''} titleStyle={{ fontFamily: headerFont }} descriptionStyle={{ fontFamily: headerFont }} />
             ))
           )}
         </Card.Content>

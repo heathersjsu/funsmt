@@ -321,15 +321,20 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
     try { if ((navigation as any)?.canGoBack?.()) navigation.goBack(); } catch {}
   };
 
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+
   return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={{ paddingBottom: 24 }}>
-      <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.primary }]}>
+    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={[
+      { paddingBottom: 24 },
+      Platform.OS === 'web' && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+    ]}>
+      <Text variant="headlineSmall" style={[styles.title, { color: theme.colors.primary, fontFamily: headerFont }]}>
         Device Configuration
       </Text>
       
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
         <Card.Content>
-          <Text variant="titleMedium" style={{ marginBottom: 8, color: theme.colors.onSurface }}>
+          <Text variant="titleMedium" style={{ marginBottom: 8, color: theme.colors.onSurface, fontFamily: headerFont }}>
             Device Info
           </Text>
           <TextInput
@@ -340,6 +345,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
             mode="outlined"
             outlineColor={theme.colors.outline}
             activeOutlineColor={theme.colors.primary}
+            contentStyle={{ fontFamily: headerFont }}
           />
           <TextInput
             label="Location"
@@ -349,6 +355,7 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
             mode="outlined"
             outlineColor={theme.colors.outline}
             activeOutlineColor={theme.colors.primary}
+            contentStyle={{ fontFamily: headerFont }}
           />
           <TextInput
             label="Device ID"
@@ -358,23 +365,24 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
             mode="outlined"
             outlineColor={theme.colors.outline}
             activeOutlineColor={theme.colors.primary}
+            contentStyle={{ fontFamily: headerFont }}
           />
         </Card.Content>
       </Card>
     
       {/* Your Devices section removed per request */}
     
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
-        <Card.Title title="Network Settings" />
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
+        <Card.Title title="Network Settings" titleStyle={{ fontFamily: headerFont }} />
         <Card.Content>
-          <TextInput label="WiFi SSID" value={ssid} onChangeText={setSsid} style={styles.input} />
-          <TextInput label="WiFi Password" value={password} onChangeText={setPassword} secureTextEntry style={styles.input} />
+          <TextInput label="WiFi SSID" value={ssid} onChangeText={setSsid} style={styles.input} contentStyle={{ fontFamily: headerFont }} />
+          <TextInput label="WiFi Password" value={password} onChangeText={setPassword} secureTextEntry style={styles.input} contentStyle={{ fontFamily: headerFont }} />
           <View style={styles.row}>
-            <Button mode="contained" onPress={onScanNetworks} loading={scanning}>Scan Networks</Button>
+            <Button mode="contained" onPress={onScanNetworks} loading={scanning} labelStyle={{ fontFamily: headerFont }}>Scan Networks</Button>
             {networks.length > 0 && (
               <View style={{ marginLeft: 12, flex: 1 }}>
                 {networks.map(n => (
-                  <Button key={n} compact onPress={() => setSsid(n)}>{n}</Button>
+                  <Button key={n} compact onPress={() => setSsid(n)} labelStyle={{ fontFamily: headerFont }}>{n}</Button>
                 ))}
               </View>
             )}
@@ -382,40 +390,40 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
         </Card.Content>
       </Card>
     
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
-        <Card.Title title="Actions" />
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
+        <Card.Title title="Actions" titleStyle={{ fontFamily: headerFont }} />
         <Card.Content>
           <View style={styles.row}>
-            <Button mode="contained" onPress={onGenerateQR} style={styles.actionBtn}>Generate Config QR</Button>
-            <Button mode="contained" onPress={startScanQR} style={styles.actionBtn}>Scan Config QR</Button>
-            <Button mode="contained" onPress={onSendConfig} style={styles.actionBtn}>Send Config to Device</Button>
-            <Button mode="outlined" onPress={onProvisionToDeviceAP} loading={apProvisioning} style={styles.actionBtn}>Send to Device AP</Button>
-            <Button mode="outlined" onPress={onTestConnection} style={styles.actionBtn}>Test Connection</Button>
+            <Button mode="contained" onPress={onGenerateQR} style={styles.actionBtn} labelStyle={{ fontFamily: headerFont }}>Generate Config QR</Button>
+            <Button mode="contained" onPress={startScanQR} style={styles.actionBtn} labelStyle={{ fontFamily: headerFont }}>Scan Config QR</Button>
+            <Button mode="contained" onPress={onSendConfig} style={styles.actionBtn} labelStyle={{ fontFamily: headerFont }}>Send Config to Device</Button>
+            <Button mode="outlined" onPress={onProvisionToDeviceAP} loading={apProvisioning} style={styles.actionBtn} labelStyle={{ fontFamily: headerFont }}>Send to Device AP</Button>
+            <Button mode="outlined" onPress={onTestConnection} style={styles.actionBtn} labelStyle={{ fontFamily: headerFont }}>Test Connection</Button>
           </View>
           <Divider style={styles.divider} />
           {qrValue ? (
             <View style={{ alignItems: 'center' }}>
               <QRCode value={qrValue} size={200} backgroundColor="#FFFFFF" />
-              <Text style={{ marginTop: 8 }}>Scan this QR with provisioning app or device agent.</Text>
+              <Text style={{ marginTop: 8, fontFamily: headerFont }}>Scan this QR with provisioning app or device agent.</Text>
             </View>
           ) : (
-            <Text>Generate a QR to share WiFi + API config.</Text>
+            <Text style={{ fontFamily: headerFont }}>Generate a QR to share WiFi + API config.</Text>
           )}
-          {message && <Text style={{ color: '#3D405B', marginTop: 8 }}>{message}</Text>}
-          {error && <Text style={{ color: '#EF476F', marginTop: 8 }}>{error}</Text>}
+          {message && <Text style={{ color: '#3D405B', marginTop: 8, fontFamily: headerFont }}>{message}</Text>}
+          {error && <Text style={{ color: '#EF476F', marginTop: 8, fontFamily: headerFont }}>{error}</Text>}
         </Card.Content>
       </Card>
 
       <Portal>
         <Dialog visible={showAddDialog} onDismiss={() => setShowAddDialog(false)}>
-          <Dialog.Title>Scan or Paste Config</Dialog.Title>
+          <Dialog.Title style={{ fontFamily: headerFont }}>Scan or Paste Config</Dialog.Title>
           <Dialog.Content>
-            <Text style={{ marginBottom: 8 }}>On web, paste the QR JSON if camera scanning is unavailable.</Text>
-            <TextInput label="QR JSON" value={pastedConfig} onChangeText={setPastedConfig} multiline />
+            <Text style={{ marginBottom: 8, fontFamily: headerFont }}>On web, paste the QR JSON if camera scanning is unavailable.</Text>
+            <TextInput label="QR JSON" value={pastedConfig} onChangeText={setPastedConfig} multiline contentStyle={{ fontFamily: headerFont }} />
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setShowAddDialog(false)}>Cancel</Button>
-            <Button onPress={applyPastedConfig}>Load</Button>
+            <Button onPress={() => setShowAddDialog(false)} labelStyle={{ fontFamily: headerFont }}>Cancel</Button>
+            <Button onPress={applyPastedConfig} labelStyle={{ fontFamily: headerFont }}>Load</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -429,17 +437,17 @@ export default function DeviceConfigScreen({ navigation, route }: Props) {
             style: styles.scanner,
           })}
           <View style={{ position: 'absolute', bottom: 24, left: 0, right: 0, alignItems: 'center' }}>
-            <Button mode="contained" onPress={() => setScanningQR(false)}>Cancel</Button>
+            <Button mode="contained" onPress={() => setScanningQR(false)} labelStyle={{ fontFamily: headerFont }}>Cancel</Button>
           </View>
         </View>
       )}
 
       {/* Footer: Cancel / Save */}
-      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 18 }]}>
+      <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0, borderRadius: 18 }]}>
         <Card.Content>
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-            <Button mode="text" onPress={onCancel} style={{ marginRight: 8 }}>Cancel</Button>
-            <Button mode="contained" onPress={onSaveDevice}>Save</Button>
+            <Button mode="text" onPress={onCancel} style={{ marginRight: 8 }} labelStyle={{ fontFamily: headerFont }}>Cancel</Button>
+            <Button mode="contained" onPress={onSaveDevice} labelStyle={{ fontFamily: headerFont }}>Save</Button>
           </View>
         </Card.Content>
       </Card>

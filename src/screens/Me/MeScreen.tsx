@@ -1,19 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, Platform } from 'react-native';
 import { Text, Card, List, Button, Avatar, Divider, useTheme } from 'react-native-paper';
-import { supabase } from '../../supabaseClient';
+import { supabase, STORAGE_KEY } from '../../supabaseClient';
+import * as SecureStore from 'expo-secure-store';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
 import { BouncyIconButton } from '../../components/BouncyIconButton';
+import { Chip } from 'react-native-paper';
 
  export default function MeScreen() {
-   const navigation = useNavigation<any>();
-   const [email, setEmail] = useState<string | null>(null);
-   const [userName, setUserName] = useState<string | null>(null);
-   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-   const [toyCounts, setToyCounts] = useState<{ total: number; out: number; in: number }>({ total: 0, out: 0, in: 0 });
-   const theme = useTheme();
+  const navigation = useNavigation<any>();
+  const [email, setEmail] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [toyCounts, setToyCounts] = useState<{ total: number; out: number; in: number }>({ total: 0, out: 0, in: 0 });
+  const [ownerSuggestions, setOwnerSuggestions] = useState<string[]>([]);
+  const theme = useTheme();
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
 
 
   const applyUser = (u: any) => {
@@ -47,14 +51,29 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => { applyUser(data.user); });
     fetchCounts();
+    (async () => {
+      try {
+        const { data } = await supabase.from('toys').select('owner').limit(100);
+        const owners = Array.from(new Set((data || []).map((t: any) => t.owner).filter(Boolean)));
+        setOwnerSuggestions(owners);
+      } catch {}
+    })();
     // 订阅登录态变化，刷新用户信息与计数，解决刷新后显示为空的问题
     const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
         applyUser(session?.user);
         fetchCounts();
+        (async () => {
+          try {
+            const { data } = await supabase.from('toys').select('owner').limit(100);
+            const owners = Array.from(new Set((data || []).map((t: any) => t.owner).filter(Boolean)));
+            setOwnerSuggestions(owners);
+          } catch {}
+        })();
       } else if (evt === 'SIGNED_OUT') {
         applyUser(null);
         setToyCounts({ total: 0, out: 0, in: 0 });
+        setOwnerSuggestions([]);
       }
     });
     return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
@@ -74,26 +93,44 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
   const onLogout = async () => {
     try {
       await supabase.auth.signOut();
+    } catch (e) {
+      // ignore network errors during signout
     } finally {
-      try {
-        // 彻底清理可能残留的会话，避免“假登录”
-        if (typeof window !== 'undefined') {
-          Object.keys(window.localStorage || {}).forEach((k) => { if (k.startsWith('sb-')) window.localStorage.removeItem(k); });
-        }
-      } catch {}
-      // 通过 URL 参数强制回到登录页
-      try { (globalThis as any).location?.assign('/?login'); } catch {}
+      // Force clear local storage to ensure UI updates
+      if (Platform.OS === 'web') {
+        try {
+          if (typeof window !== 'undefined') {
+             window.localStorage.removeItem(STORAGE_KEY);
+             Object.keys(window.localStorage).forEach((k) => { 
+               if (k.startsWith('sb-') || k.includes('auth-token')) window.localStorage.removeItem(k); 
+             });
+             // Reload to clear memory state completely and force clean start
+             window.location.href = '/';
+          }
+        } catch {}
+      } else {
+        // Native: clear SecureStore and rely on App.tsx onAuthStateChange
+        try {
+          await SecureStore.deleteItemAsync(STORAGE_KEY);
+        } catch {}
+      }
     }
   };
 
+   const isWeb = Platform.OS === 'web';
+   
    return (
      <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
        <ScrollView
-         style={[styles.container, { backgroundColor: 'transparent' }]}
-         contentContainerStyle={{ paddingBottom: 24 }}
          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+         style={{ flex: 1 }}
+         contentContainerStyle={[
+           { paddingBottom: 40, paddingHorizontal: 16 },
+           isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
+         ]}
        >
-         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
+         {/* Header Profile Card */}
+         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0 }]}> 
            <Card.Title
              title={userName || 'Me'}
              subtitle={email || ''}
@@ -106,7 +143,7 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
                  )}
                </TouchableOpacity>
              )}
-             titleStyle={{ color: theme.colors.onSurface }}
+             titleStyle={{ color: theme.colors.onSurface, fontFamily: headerFont }}
              subtitleStyle={{ color: theme.colors.onSurfaceVariant }}
            />
            <Card.Content>
@@ -115,56 +152,39 @@ import { BouncyIconButton } from '../../components/BouncyIconButton';
            </Card.Content>
          </Card>
 
-         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
+        <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0 }]}> 
+          <List.Item title="Toy Owner" titleStyle={{ fontFamily: headerFont }} left={() => <BouncyIconButton icon="account-group" bg={theme.colors.primary} onPress={() => navigation.navigate('OwnerManagement')} size="small" />} onPress={() => navigation.navigate('OwnerManagement')} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+          <List.Item
+            title="Reminders"
+            titleStyle={{ fontFamily: headerFont }}
+            left={() => (
+              <BouncyIconButton
+                icon="bell-outline"
+                bg={theme.colors.secondary}
+                onPress={() => navigation.navigate('ReminderStatusAlias')}
+                size="small"
+              />
+            )}
+            onPress={() => navigation.navigate('ReminderStatusAlias')}
+            right={() => <List.Icon icon="chevron-right" />}
+            style={{ paddingLeft: 20 }}
+          />
+          <List.Item
+            title="Checklist"
+            titleStyle={{ fontFamily: headerFont }}
+            left={() => <BouncyIconButton icon="clipboard-check-outline" bg={theme.colors.primary} onPress={() => navigation.navigate('RecoveryChecklist')} size="small" />}
+            onPress={() => navigation.navigate('RecoveryChecklist')}
+            right={() => <List.Icon icon="chevron-right" />}
+            style={{ paddingLeft: 20 }}
+          />
+          <List.Item title="Manual" titleStyle={{ fontFamily: headerFont }} left={() => <BouncyIconButton icon="book" bg={theme.colors.primary} onPress={onManual} size="small" />} onPress={onManual} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+          <List.Item title="Help" titleStyle={{ fontFamily: headerFont }} left={() => <BouncyIconButton icon="help-circle" bg={theme.colors.primary} onPress={onHelp} size="small" />} onPress={onHelp} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+          <List.Item title="Environment Check" titleStyle={{ fontFamily: headerFont }} left={() => <BouncyIconButton icon="wrench" bg={theme.colors.primary} onPress={() => navigation.navigate('EnvironmentCheck')} size="small" />} onPress={() => navigation.navigate('EnvironmentCheck')} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
+        </Card>
 
-          <List.Item title="Help" left={() => <BouncyIconButton icon="help-circle" bg={theme.colors.primary} onPress={onHelp} size="small" />} onPress={onHelp} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
-           <Divider />
+         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 0 }]}> 
 
-         <List.Item title="Manual" left={() => <BouncyIconButton icon="book" bg={theme.colors.primary} onPress={onManual} size="small" />} onPress={onManual} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
-         <List.Item title="Environment Check" left={() => <BouncyIconButton icon="wrench" bg={theme.colors.primary} onPress={() => navigation.navigate('EnvironmentCheck')} size="small" />} onPress={() => navigation.navigate('EnvironmentCheck')} right={() => <List.Icon icon="chevron-right" />} style={{ paddingLeft: 20 }} />
-         <List.Item
-           title="Recovery Checklist"
-           left={() => <BouncyIconButton icon="clipboard-check-outline" bg={theme.colors.primary} onPress={() => navigation.navigate('RecoveryChecklist')} size="small" />}
-           onPress={() => navigation.navigate('RecoveryChecklist')}
-           right={() => <List.Icon icon="chevron-right" />}
-           style={{ paddingLeft: 20 }}
-         />
-         <List.Item
-           title="Reminders"
-           left={() => (
-             <BouncyIconButton
-               icon="bell-outline"
-               bg={theme.colors.secondary}
-               onPress={() => {
-                 // 跨 Tab 导航：确保从 MeStack 跳转到 Home Tab 下的 ReminderStatus
-                 const parent = navigation.getParent?.();
-                 if (parent) {
-                   parent.navigate('Home', { screen: 'ReminderStatus' });
-                 } else {
-                   navigation.navigate('Home', { screen: 'ReminderStatus' });
-                 }
-               }}
-               size="small"
-             />
-           )}
-           onPress={() => {
-             const parent = navigation.getParent?.();
-             if (parent) {
-               parent.navigate('Home', { screen: 'ReminderStatus' });
-             } else {
-               navigation.navigate('Home', { screen: 'ReminderStatus' });
-             }
-           }}
-           right={() => <List.Icon icon="chevron-right" />}
-           style={{ paddingLeft: 20 }}
-         />
-          
-          {/* Moved reminder entries into ReminderStatusScreen per request */}
-         </Card>
-
-         <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
-
-          <List.Item title="Sign Out" left={() => <BouncyIconButton icon="logout" bg={theme.colors.error} onPress={onLogout} size="small" />} onPress={onLogout} style={{ paddingLeft: 20 }} />
+          <List.Item title="Sign Out" titleStyle={{ fontFamily: headerFont }} left={() => <BouncyIconButton icon="logout" bg={theme.colors.error} onPress={onLogout} size="small" />} onPress={onLogout} style={{ paddingLeft: 20 }} />
          </Card>
        </ScrollView>
      </LinearGradient>

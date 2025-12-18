@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, ScrollView, Platform } from 'react-native';
 import { Text, Card, List, Button } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
 
@@ -42,17 +42,26 @@ export default function AccountScreen() {
     }
   };
 
+  const isWeb = Platform.OS === 'web';
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+
   return (
-    <View style={styles.container}>
-      <Text variant="headlineMedium" style={styles.title}>Account</Text>
+    <ScrollView 
+      style={styles.container}
+      contentContainerStyle={[
+        { paddingBottom: 24 },
+        isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+      ]}
+    >
+      <Text variant="headlineMedium" style={[styles.title, { fontFamily: headerFont }]}>Account</Text>
       <Card style={styles.card}>
         <Card.Content>
-          <List.Item title="Email" description={email || '-'} />
-          <List.Item title="User ID" description={id || '-'} />
-          <Button mode="contained" onPress={handleLogout} style={{ marginTop: 12, borderRadius: 14 }}>Logout</Button>
+          <List.Item title="Email" description={email || '-'} titleStyle={{ fontFamily: headerFont }} descriptionStyle={{ fontFamily: headerFont }} />
+          <List.Item title="User ID" description={id || '-'} titleStyle={{ fontFamily: headerFont }} descriptionStyle={{ fontFamily: headerFont }} />
+          <Button mode="contained" onPress={handleLogout} style={{ marginTop: 12, borderRadius: 14 }} labelStyle={{ fontFamily: headerFont }}>Logout</Button>
         </Card.Content>
       </Card>
-    </View>
+    </ScrollView>
   );
 }
 

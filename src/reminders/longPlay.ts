@@ -14,6 +14,7 @@ let startTimes: Record<string, string> = {};
 // Track which reminder stages have been sent per toy to avoid duplicates
 // Stages are minutes after session start: [durationMin, durationMin+10, durationMin+30]
 let stagesSent: Record<string, Set<number>> = {};
+let dailySent: Record<string, Set<number>> = {};
 let channel: any = null;
 let currentSettings: LongPlaySettings | null = null;
 
@@ -37,10 +38,10 @@ function clearTimer(toyId: string) {
   delete timers[toyId];
   delete startTimes[toyId];
   delete stagesSent[toyId];
+  delete dailySent[toyId];
 }
 
 async function notifyLongPlay(toyName: string, ownerName: string | null, minutes: number, stageMin: number) {
-  // Friendly English message with toy and owner name
   const ownerLabel = ownerName ? `${ownerName}'s ` : '';
   const body = `Friendly reminder: ${ownerLabel}${toyName} has been playing for ${minutes} minutes. Take a short break, drink some water, and rest your eyes.`;
   try {
@@ -49,8 +50,20 @@ async function notifyLongPlay(toyName: string, ownerName: string | null, minutes
       content: { title: 'Long Play Reminder', body },
       trigger: null,
     });
-    // Stamp source with toyId+stage for de-dup across runs
     await recordNotificationHistory('Long Play reminder', body, `longPlay:${toyName}:${stageMin}`);
+  } catch {}
+}
+
+async function notifyLongPlayDaily(toyName: string, ownerName: string | null, days: number) {
+  const ownerLabel = ownerName ? `${ownerName}'s ` : '';
+  const body = `Friendly reminder: ${ownerLabel}${toyName} has been playing for ${days} days. Take a short break, drink some water, and rest your eyes.`;
+  try {
+    await ensureNotificationPermissionAndChannel();
+    await Notifications.scheduleNotificationAsync({
+      content: { title: 'Long Play Reminder', body },
+      trigger: null,
+    });
+    await recordNotificationHistory('Long Play reminder', body, `longPlay:${toyName}:day:${days}`);
   } catch {}
 }
 
@@ -83,11 +96,19 @@ export async function startLongPlayMonitor(settings: LongPlaySettings) {
               const diffMs = Date.now() - new Date(start).getTime();
               const mins = Math.floor(Math.max(0, diffMs) / 60000);
               const base = settings.durationMin;
-              const stages = [base, base + 10, base + 30];
+              const stages = [base, base + 5, base + 15];
               for (const s of stages) {
                 if (mins >= s && !stagesSent[toyId].has(s)) {
                   stagesSent[toyId].add(s);
                   await notifyLongPlay(toyName, ownerName, mins, s);
+                }
+              }
+              const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+              if (mins >= base && days >= 1) {
+                dailySent[toyId] = dailySent[toyId] || new Set<number>();
+                if (!dailySent[toyId].has(days)) {
+                  dailySent[toyId].add(days);
+                  await notifyLongPlayDaily(toyName, ownerName, days);
                 }
               }
             } catch {}
@@ -112,6 +133,7 @@ export async function startLongPlayMonitor(settings: LongPlaySettings) {
         const st = await fetchLastScanTime(tid);
         startTimes[tid] = st || new Date().toISOString();
         stagesSent[tid] = stagesSent[tid] || new Set<number>();
+        dailySent[tid] = dailySent[tid] || new Set<number>();
         clearTimer(tid);
         const checkAndMaybeNotify = async () => {
           try {
@@ -120,11 +142,19 @@ export async function startLongPlayMonitor(settings: LongPlaySettings) {
             const diffMs = Date.now() - new Date(start).getTime();
             const mins = Math.floor(Math.max(0, diffMs) / 60000);
             const base = settings.durationMin;
-            const stages = [base, base + 10, base + 30];
+            const stages = [base, base + 5, base + 15];
             for (const s of stages) {
               if (mins >= s && !stagesSent[tid].has(s)) {
                 stagesSent[tid].add(s);
                 await notifyLongPlay(tname, ownerName, mins, s);
+              }
+            }
+            const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+            if (mins >= base && days >= 1) {
+              dailySent[tid] = dailySent[tid] || new Set<number>();
+              if (!dailySent[tid].has(days)) {
+                dailySent[tid].add(days);
+                await notifyLongPlayDaily(tname, ownerName, days);
               }
             }
           } catch {}

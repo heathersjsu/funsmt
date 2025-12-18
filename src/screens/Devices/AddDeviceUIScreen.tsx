@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { View, StyleSheet, Platform, Pressable } from 'react-native';
-import { Text, Card, TextInput, Button, useTheme, Portal, Dialog, List, Snackbar, Menu } from 'react-native-paper';
+import { View, StyleSheet, Platform, Pressable, ScrollView } from 'react-native';
+import { Text, TextInput, Button, useTheme, Portal, Dialog, List, Snackbar, Menu } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
 import Constants from 'expo-constants';
 import { cartoonGradient } from '../../theme/tokens';
@@ -11,6 +11,7 @@ import { useNavigation } from '@react-navigation/native';
 
 export default function AddDeviceUIScreen() {
   const theme = useTheme();
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
   const navigation = useNavigation<any>();
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
@@ -23,6 +24,8 @@ export default function AddDeviceUIScreen() {
   const [bleItems, setBleItems] = useState<Array<{ id: string; name: string; rssi?: number | null }>>([]);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState('');
+  const [inlineMsg, setInlineMsg] = useState('');
+  const [inlineVisible, setInlineVisible] = useState(false);
   const [connectedDevice, setConnectedDevice] = useState<any>(null);
   const monRef = useRef<any>(null);
   const monTxIdRef = useRef<string | null>(null);
@@ -201,6 +204,9 @@ export default function AddDeviceUIScreen() {
       // Prompt (English) on successful Bluetooth connection
       setSnackbarMsg('connect bluetooth success');
       setSnackbarVisible(true);
+      setInlineMsg('Scan success');
+      setInlineVisible(true);
+      setTimeout(() => setInlineVisible(false), 2000);
       const serviceUUID = '0000fff0-0000-1000-8000-00805f9b34fb';
       const idCharUUID3 = '0000fff3-0000-1000-8000-00805f9b34fb';
       const idCharUUID2 = '0000fff2-0000-1000-8000-00805f9b34fb';
@@ -386,6 +392,9 @@ export default function AddDeviceUIScreen() {
           // Prompt (English) per request
           setSnackbarMsg('connect WIFI success');
           setSnackbarVisible(true);
+          setInlineMsg('Connect success');
+          setInlineVisible(true);
+          setTimeout(() => setInlineVisible(false), 2000);
           // 自动下发 Supabase 配置与设备 JWT，并触发一次 HEARTBEAT_NOW
           if (!autoJwtSentRef.current) {
             autoJwtSentRef.current = true;
@@ -585,43 +594,48 @@ export default function AddDeviceUIScreen() {
 
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <View style={styles.container}>
-        <Card style={[styles.card, { backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant }]}> 
-          <Card.Content>
-            {/* Banner */}
-            <View style={[styles.banner, { backgroundColor: theme.colors.surfaceVariant }]}> 
-              <Text style={{ color: theme.colors.onSurface }}>Power on the device and keep it close to your phone.</Text>
-            </View>
-
-            {/* Inputs */}
-            <TextInput label="Device Name" value={name} onChangeText={setName} style={styles.input} mode="outlined" />
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={[
+          { padding: 16, paddingBottom: 48 },
+          Platform.OS === 'web' && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
+        ]}
+      >
+          <View>
+            <TextInput
+              label="Device Name (e.g. Living Room Monitor)"
+              value={name}
+              onChangeText={setName}
+              style={styles.input}
+              contentStyle={{ fontFamily: headerFont }}
+            />
             <Menu
               visible={locMenuOpen}
               onDismiss={() => setLocMenuOpen(false)}
               anchor={
                 <Pressable onPress={() => { if (!locLockRef.current) setLocMenuOpen(true); }}>
-                  <TextInput label="Location" value={location} onChangeText={setLocation} style={styles.input} mode="outlined" onFocus={() => { if (!locLockRef.current) setLocMenuOpen(true); }} />
+                  <TextInput label="Location" value={location} onChangeText={setLocation} style={styles.input} mode="outlined" contentStyle={{ fontFamily: headerFont }} onFocus={() => { if (!locLockRef.current) setLocMenuOpen(true); }} />
                 </Pressable>
               }
             >
               {DEFAULT_LOCATIONS.map((loc) => (
-                <Menu.Item key={`def-${loc}`} title={loc} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
+                <Menu.Item key={`def-${loc}`} title={loc} titleStyle={{ fontFamily: headerFont }} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
               ))}
               {locSuggestions.filter(s => !DEFAULT_LOCATIONS.includes(s)).map((loc) => (
-                <Menu.Item key={loc} title={loc} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
+                <Menu.Item key={loc} title={loc} titleStyle={{ fontFamily: headerFont }} onPress={() => { setLocation(loc); setLocMenuOpen(false); locLockRef.current = true; setTimeout(() => { locLockRef.current = false; }, 150); }} />
               ))}
-            </Menu>
+                </Menu>
 
-            {/* Device ID + Scan */}
-            <View style={styles.row}> 
+                {/* Device ID + Scan */}
+            <View style={styles.row}>
               <View style={{ flex: 1, marginRight: 8 }}>
-                <TextInput label="Device ID" value={deviceId} onChangeText={setDeviceId} mode="outlined" contentStyle={{ textAlign: 'left' }} />
+                <TextInput label="Device ID" value={deviceId} onChangeText={setDeviceId} mode="outlined" contentStyle={{ textAlign: 'left', fontFamily: headerFont }} />
               </View>
-              <Button mode="outlined" onPress={startBleScan} disabled={Platform.OS === 'web'}>Scan</Button>
+              <Button mode="outlined" onPress={startBleScan} disabled={Platform.OS === 'web'} labelStyle={{ fontFamily: headerFont }}>Scan</Button>
             </View>
 
             {/* Scan Wi‑Fi */}
-            <Button mode="outlined" style={{ marginTop: 12 }} onPress={scanWifiListViaBle} disabled={Platform.OS === 'web'}>Scan Wi‑Fi</Button>
+            <Button mode="outlined" style={{ marginTop: 12 }} onPress={scanWifiListViaBle} disabled={Platform.OS === 'web'} labelStyle={{ fontFamily: headerFont }}>Scan Wi‑Fi</Button>
 
             {/* After selecting SSID from popup, show SSID/PW rows on main screen */}
             {selectedWifi ? (
@@ -631,6 +645,7 @@ export default function AddDeviceUIScreen() {
                   value={selectedWifi}
                   onChangeText={setSelectedWifi}
                   mode="outlined"
+                  contentStyle={{ fontFamily: headerFont }}
                 />
                 <TextInput
                   label="WiFi Password"
@@ -639,14 +654,14 @@ export default function AddDeviceUIScreen() {
                   secureTextEntry
                   mode="outlined"
                   style={{ marginTop: 8 }}
+                  contentStyle={{ fontFamily: headerFont }}
                 />
-                <Button mode="contained" onPress={connectWifiViaBle} loading={connectBusy} style={{ marginTop: 8 }}>
+                <Button mode="outlined" onPress={connectWifiViaBle} loading={connectBusy} style={{ marginTop: 8 }} labelStyle={{ fontFamily: headerFont }}>
                   Connect
                 </Button>
               </View>
             ) : null}
-          </Card.Content>
-        </Card>
+          </View>
 
         {/* BLE picker: UI unified with Wi‑Fi scan popup (no title, compact list) */}
         <Portal>
@@ -654,7 +669,7 @@ export default function AddDeviceUIScreen() {
             {/* No Title (to match Wi‑Fi popup) */}
             <Dialog.Content>
               {bleItems.length === 0 ? (
-                <Text>Waiting for device...</Text>
+                <Text style={{ fontFamily: headerFont }}>Waiting for device...</Text>
               ) : (
                 bleItems.map((d) => (
                   <List.Item
@@ -663,24 +678,29 @@ export default function AddDeviceUIScreen() {
                     description={`${d.id}${typeof d.rssi === 'number' ? ` • RSSI ${d.rssi}` : ''}`}
                     // Compact styles to match Wi‑Fi popup
                     style={{ paddingVertical: 4 }}
-                    titleStyle={{ fontSize: 14 }}
-                    descriptionStyle={{ fontSize: 12, color: '#666' }}
+                    titleStyle={{ fontSize: 14, fontFamily: headerFont }}
+                    descriptionStyle={{ fontSize: 12, color: '#666', fontFamily: headerFont }}
                     onPress={() => onPickBleDevice({ id: d.id, name: d.name })}
                   />
                 ))
               )}
             </Dialog.Content>
             <Dialog.Actions>
-              <Button onPress={() => { try { bleRef.current?.stopDeviceScan(); } catch {}; setBlePickerVisible(false); }}>Close</Button>
+              <Button onPress={() => { try { bleRef.current?.stopDeviceScan(); } catch {}; setBlePickerVisible(false); }} labelStyle={{ fontFamily: headerFont }}>Close</Button>
             </Dialog.Actions>
           </Dialog>
         </Portal>
 
         {/* Save */}
-        <Button mode="contained" style={styles.saveButton} onPress={onSave}>Save</Button>
+        <Button mode="contained" style={{ marginTop: 16, borderRadius: 20, alignSelf: 'center' }} contentStyle={{ height: 44 }} onPress={onSave} labelStyle={{ fontFamily: headerFont }}>Save</Button>
+        {inlineVisible ? (
+          <View style={{ alignSelf: 'center', marginTop: 8, backgroundColor: theme.colors.secondaryContainer, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8 }}>
+            <Text style={{ fontFamily: headerFont, color: theme.colors.onSecondaryContainer }}>{inlineMsg}</Text>
+          </View>
+        ) : null}
 
-        <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={2500}>
-          {snackbarMsg}
+        <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={2500} style={{ backgroundColor: theme.colors.secondaryContainer, alignSelf: 'center' }} wrapperStyle={{ position: 'absolute', top: '45%', left: 0, right: 0 }}>
+          <Text style={{ fontFamily: headerFont, color: theme.colors.onSecondaryContainer, textAlign: 'center' }}>{snackbarMsg}</Text>
         </Snackbar>
 
         {/* Wi‑Fi scan popup (no title, English prompts, compact list) */}
@@ -689,7 +709,7 @@ export default function AddDeviceUIScreen() {
             {/* No Title as requested */}
             <Dialog.Content>
               {wifiItemsBle.length === 0 ? (
-                <Text>Waiting for device...</Text>
+                <Text style={{ fontFamily: headerFont }}>Waiting for device...</Text>
               ) : (
                 wifiItemsBle
                   .sort((a, b) => b.rssi - a.rssi)
@@ -701,8 +721,8 @@ export default function AddDeviceUIScreen() {
                       description={`${item.enc} • RSSI ${item.rssi}`}
                       // Compact styles
                       style={{ paddingVertical: 4 }}
-                      titleStyle={{ fontSize: 14 }}
-                      descriptionStyle={{ fontSize: 12, color: '#666' }}
+                      titleStyle={{ fontSize: 14, fontFamily: headerFont }}
+                      descriptionStyle={{ fontSize: 12, color: '#666', fontFamily: headerFont }}
                       onPress={() => { setSelectedWifi(item.ssid); setWifiBlePickerVisible(false); }}
                     />
                   ))
@@ -710,20 +730,18 @@ export default function AddDeviceUIScreen() {
               {/* Main screen handles SSID/PW inputs; keep popup simple */}
             </Dialog.Content>
             <Dialog.Actions>
-              <Button onPress={() => setWifiBlePickerVisible(false)}>Close</Button>
+              <Button onPress={() => setWifiBlePickerVisible(false)} labelStyle={{ fontFamily: headerFont }}>Close</Button>
             </Dialog.Actions>
           </Dialog>
         </Portal>
-      </View>
+      </ScrollView>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16 },
-  card: { borderRadius: 20 },
   banner: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 },
   input: { marginTop: 12 },
   row: { flexDirection: 'row', alignItems: 'center', marginTop: 12 },
-  saveButton: { marginTop: 16, borderRadius: 20, paddingVertical: 6 },
 });

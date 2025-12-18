@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, Image, Platform } from 'react-native';
+import { View, StyleSheet, Image, Platform, ScrollView } from 'react-native';
 import { TextInput, Button, Card, Text, useTheme } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -30,6 +30,7 @@ export default function EditProfileScreen({ navigation }: Props) {
   const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
   const [avatarContentType, setAvatarContentType] = useState<string | null>(null);
   const [originalAssetUri, setOriginalAssetUri] = useState<string | null>(null);
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -177,9 +178,17 @@ export default function EditProfileScreen({ navigation }: Props) {
     }
   };
 
+  const isWeb = Platform.OS === 'web';
+
   return (
-    <View style={[editProfileStyles.container, { backgroundColor: theme.colors.background }]}>
-      <Card style={[editProfileStyles.card, { backgroundColor: theme.colors.surface }]}>
+    <ScrollView 
+      style={{ flex: 1, backgroundColor: theme.colors.background }}
+      contentContainerStyle={[
+        { padding: 16 },
+        isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+      ]}
+    >
+      <Card style={[editProfileStyles.card, { marginBottom: 24 }]}>
         <Card.Title title="Edit Profile" />
         <Card.Content>
           <TextInput 
@@ -212,7 +221,7 @@ export default function EditProfileScreen({ navigation }: Props) {
           <Button mode="contained" onPress={save} loading={saving} style={{ marginTop: 12 }}>Save</Button>
         </Card.Content>
       </Card>
-    </View>
+    </ScrollView>
   );
 }
 

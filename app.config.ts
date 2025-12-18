@@ -21,6 +21,17 @@ export default ({ config }: { config: any }) => {
   const SITE_URL = (process.env.EXPO_PUBLIC_SITE_URL || process.env.SITE_URL || local.EXPO_PUBLIC_SITE_URL || local.SITE_URL || '').trim();
   return {
     ...config,
+    android: {
+      ...(config.android || {}),
+      permissions: Array.from(new Set([...(config.android?.permissions || []), 'RECORD_AUDIO'])),
+    },
+    ios: {
+      ...(config.ios || {}),
+      infoPlist: {
+        ...(config.ios?.infoPlist || {}),
+        NSMicrophoneUsageDescription: (config.ios?.infoPlist?.NSMicrophoneUsageDescription || 'Voice commands need microphone access'),
+      },
+    },
     extra: {
       ...(config.extra || {}),
       SUPABASE_URL,

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Platform, ScrollView } from 'react-native';
-import { useTheme, Button, Card, Text, TextInput, Portal, Dialog, List, Snackbar } from 'react-native-paper';
+import { useTheme, Button, Card, Text, TextInput, Portal, Dialog, List, Snackbar, Banner } from 'react-native-paper';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../../supabaseClient';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +9,7 @@ import { BleManager } from '../../shims/ble';
 
 export default function EnvironmentCheckScreen() {
   const theme = useTheme();
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
   const [bleOk, setBleOk] = useState<boolean | null>(null);
   const [wifiOk, setWifiOk] = useState<boolean | null>(null);
   const [jwtOk, setJwtOk] = useState<boolean | null>(null);
@@ -16,6 +17,8 @@ export default function EnvironmentCheckScreen() {
   const [showAllLogs, setShowAllLogs] = useState<boolean>(false);
   const [snackbarMsg, setSnackbarMsg] = useState<string>('');
   const [snackbarVisible, setSnackbarVisible] = useState<boolean>(false);
+  const [storageKeys, setStorageKeys] = useState<string[]>([]);
+  const [sessionUserId, setSessionUserId] = useState<string>('');
 
   // BLE
   const bleRef = useRef<any>(null);
@@ -135,9 +138,51 @@ export default function EnvironmentCheckScreen() {
     } catch {
       setJwtOk(false);
     }
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      setSessionUserId((u?.user?.id as string | undefined) || '');
+    } catch {
+      setSessionUserId('');
+    }
   };
 
-  useEffect(() => { runChecks(); }, []);
+  const refreshWebStorage = () => {
+    if (Platform.OS !== 'web') { setStorageKeys([]); return; }
+    try {
+      const keys = Object.keys((window as any)?.localStorage || {})
+        .filter((k) => k.startsWith('sb-') || k.includes('auth-token'))
+        .sort();
+      setStorageKeys(keys);
+    } catch { setStorageKeys([]); }
+  };
+
+  const clearSbStorageAndReload = () => {
+    if (Platform.OS !== 'web') return;
+    try { 
+      Object.keys((window as any)?.localStorage || {}).forEach((k) => { 
+        if (k.startsWith('sb-') || k.includes('auth-token')) (window as any).localStorage.removeItem(k); 
+      }); 
+    } catch {}
+    try { (globalThis as any).location?.reload?.(); } catch {}
+  };
+
+  useEffect(() => { runChecks(); refreshWebStorage(); }, []);
+
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const ok = !!data.session?.access_token;
+        setJwtOk(ok);
+      } catch { setJwtOk(false); }
+      try {
+        const { data: u } = await supabase.auth.getUser();
+        setSessionUserId((u?.user?.id as string | undefined) || '');
+      } catch { setSessionUserId(''); }
+      refreshWebStorage();
+    });
+    return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
+  }, []);
 
   // 预热依赖，避免在点击时首次动态加载引起的打包卡顿
   useEffect(() => {
@@ -462,163 +507,19 @@ export default function EnvironmentCheckScreen() {
     }
   };
 
+  const isWeb = Platform.OS === 'web';
+
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <View style={{ flex: 1, padding: 16 }}>
-        <Card style={{ backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }}>
-          <Card.Title title="Environment Check" subtitle="Quick status" />
-          <Card.Content>
-            {/* Row: BLE */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
-              <MaterialCommunityIcons name="bluetooth" size={22} color={theme.colors.onSurfaceVariant} style={{ marginRight: 12 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: '600' }}>连接蓝牙</Text>
-                <Text style={{ color: theme.colors.onSurfaceVariant }}>
-                  {bleOk == null ? '检测中…' : (bleOk ? 'BLE 模块可用' : '未检测到 BLE 支持（Web/Expo Go 可能不支持）')}
-                </Text>
-              </View>
-              <MaterialCommunityIcons
-                name={bleOk ? 'check-circle' : 'close-circle'}
-                size={22}
-                color={bleOk ? theme.colors.primary : theme.colors.error}
-              />
-            </View>
-
-            {/* Row: Wi‑Fi */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
-              <MaterialCommunityIcons name="wifi" size={22} color={theme.colors.onSurfaceVariant} style={{ marginRight: 12 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: '600' }}>连接 Wi‑Fi</Text>
-                <Text style={{ color: theme.colors.onSurfaceVariant }}>
-                  {wifiOk == null ? '检测中…' : (wifiOk ? '网络可达（Supabase 正常响应）' : '网络不可达或服务错误')}
-                </Text>
-              </View>
-              <MaterialCommunityIcons
-                name={wifiOk ? 'check-circle' : 'close-circle'}
-                size={22}
-                color={wifiOk ? theme.colors.primary : theme.colors.error}
-              />
-            </View>
-
-            {/* Row: JWT */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}>
-              <MaterialCommunityIcons name="shield-check" size={22} color={theme.colors.onSurfaceVariant} style={{ marginRight: 12 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: '600' }}>JWT 成功</Text>
-                <Text style={{ color: theme.colors.onSurfaceVariant }}>
-                  {jwtOk == null ? '检测中…' : (jwtOk ? '已获取访问令牌' : '未登录或令牌缺失')}
-                </Text>
-              </View>
-              <MaterialCommunityIcons
-                name={jwtOk ? 'check-circle' : 'close-circle'}
-                size={22}
-                color={jwtOk ? theme.colors.primary : theme.colors.error}
-              />
-            </View>
-
-            {/* Actions & Inputs */}
-            <View style={{ marginTop: 12 }}>
-              <Text style={{ marginBottom: 6 }}>ESP32 设备 ID</Text>
-              <TextInput value={esp32Id} onChangeText={setEsp32Id} mode="outlined" style={{ maxWidth: 240 }} contentStyle={{ textAlign: 'center' }} />
-              <View style={{ flexDirection: 'row', marginTop: 8 }}>
-                <Button mode="contained" onPress={startBleScan} style={{ marginRight: 8 }} disabled={Platform.OS === 'web'}>
-                  Scan BLE
-                </Button>
-                <Button mode="outlined" onPress={scanWifiListViaBle} disabled={!connectedDevice || Platform.OS === 'web'}>
-                  Scan Wi‑Fi
-                </Button>
-              </View>
-              {selectedWifi ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8 }}>
-                  <Text style={{ marginRight: 8 }}>Selected: {selectedWifi}</Text>
-                  <TextInput
-                    placeholder="password"
-                    value={wifiPassword}
-                    onChangeText={setWifiPassword}
-                    secureTextEntry
-                    style={{ flex: 1, maxWidth: 240 }}
-                  />
-                  <Button mode="contained" onPress={connectWifiViaBle} loading={connectBusy} style={{ marginLeft: 8 }}>
-                    Connect
-                  </Button>
-                </View>
-              ) : null}
-            </View>
-          </Card.Content>
-          <Card.Actions>
-            <Button mode="outlined" onPress={runChecks}>刷新</Button>
-            <Button mode="outlined" style={{ marginLeft: 8 }} onPress={async () => {
-              try {
-                const clip = await import('expo-clipboard');
-                if ((clip as any)?.setStringAsync) {
-                  await (clip as any).setStringAsync(status || '');
-                } else if ((navigator as any)?.clipboard?.writeText) {
-                  await (navigator as any).clipboard.writeText(status || '');
-                }
-                setSnackbarMsg('日志已复制');
-                setSnackbarVisible(true);
-              } catch (e: any) {
-                setSnackbarMsg('复制失败，请手动选择复制');
-                setSnackbarVisible(true);
-              }
-            }}>复制日志</Button>
-            <Button mode="text" style={{ marginLeft: 8 }} onPress={() => setShowAllLogs(false)}>最近 50 条</Button>
-            <Button mode="text" onPress={() => setShowAllLogs(true)}>全部</Button>
-          </Card.Actions>
-        </Card>
-
-        {/* Logs: newest on top */}
-        <Card style={{ marginTop: 12, backgroundColor: theme.colors.surface, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 20 }}>
-          <Card.Title title="日志" subtitle={showAllLogs ? '显示全部（新信息在上面）' : '显示最近 50 条（新信息在上面）'} left={(p) => <List.Icon {...p} icon="file-document-outline" />} />
-          <Card.Content>
-            <ScrollView style={{ maxHeight: 240 }}>
-              <Text style={{ fontFamily: Platform.OS === 'web' ? 'monospace' : undefined }}>
-                {(showAllLogs ? status : (status ? status.split('\n').slice(0, 50).join('\n') : '')) || '暂无日志（点击 Scan BLE / Scan Wi‑Fi / Connect 后会显示详细步骤和设备回应）'}
-              </Text>
-            </ScrollView>
-          </Card.Content>
-        </Card>
-
-        {/* BLE picker: only pinme-ESP32_XXXXXX */}
-        <Portal>
-          <Dialog visible={blePickerVisible} onDismiss={() => setBlePickerVisible(false)} style={{ borderRadius: 16 }}>
-            <Dialog.Title>选择 pinme-ESP32 设备</Dialog.Title>
-            <Dialog.Content>
-              {bleItems.length === 0 ? (
-                <Text>{bleScanning ? '扫描中…' : '未发现 pinme-ESP32_XXXXXX 设备'}</Text>
-              ) : (
-                bleItems.map((d) => (
-                  <List.Item key={d.id} title={d.name} description={d.id} left={(p) => <List.Icon {...p} icon="bluetooth" />} onPress={() => onPickBleDevice({ id: d.id, name: d.name })} />
-                ))
-              )}
-            </Dialog.Content>
-            <Dialog.Actions>
-              <Button onPress={() => { try { bleRef.current?.stopDeviceScan(); } catch {}; setBlePickerVisible(false); }}>关闭</Button>
-            </Dialog.Actions>
-          </Dialog>
-
-          {/* Wi‑Fi list from device */}
-          <Dialog visible={wifiBlePickerVisible} onDismiss={() => setWifiBlePickerVisible(false)} style={{ borderRadius: 16 }}>
-            <Dialog.Title>选择 Wi‑Fi（最多显示 5 个）</Dialog.Title>
-            <Dialog.Content>
-              {wifiItemsBle.length === 0 ? (
-                <Text>等待设备回应…</Text>
-              ) : (
-                wifiItemsBle.slice(0, 5).map((item, idx) => (
-                  <List.Item key={`${item.ssid}-${idx}`} title={item.ssid} description={`${item.enc} • RSSI ${item.rssi}`} left={(p) => <List.Icon {...p} icon="wifi" />} onPress={() => { setSelectedWifi(item.ssid); setWifiBlePickerVisible(false); }} />
-                ))
-              )}
-            </Dialog.Content>
-            <Dialog.Actions>
-              <Button onPress={() => setWifiBlePickerVisible(false)}>关闭</Button>
-            </Dialog.Actions>
-          </Dialog>
-        </Portal>
-
-        <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={2500}>
-          {snackbarMsg}
-        </Snackbar>
-      </View>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={[
+          { padding: 16, paddingBottom: 40 },
+          isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 32 }
+        ]}
+      >
+        <View />
+      </ScrollView>
     </LinearGradient>
   );
 }

@@ -1,13 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet, Platform } from 'react-native';
-import { Text, Card, List, Divider, useTheme } from 'react-native-paper';
-import { LinearGradient } from 'expo-linear-gradient';
+import { View, ScrollView, StyleSheet, Platform, ActivityIndicator } from 'react-native';
+import { Text, useTheme, Button } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
-import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Toy } from '../../types';
 import Svg, { Circle, G, Text as SvgText } from 'react-native-svg';
-import TagCard from '../../components/TagCard';
-import { cartoonGradient } from '../../theme/tokens';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 type Props = { embedded?: boolean; refreshSignal?: number };
 
@@ -15,43 +12,127 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
   const [toys, setToys] = useState<Toy[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const theme = useTheme();
+  const [loading, setLoading] = useState(true);
 
-  const fetchData = async () => {
-    const { data, error } = await supabase
+  const withTimeout = async <T>(p: Promise<T>, ms: number): Promise<T> => {
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Request timeout')), ms)),
+    ]);
+  };
+
+  const fetchToysOnce = async () => {
+    return await supabase
       .from('toys')
       .select('id,name,status,category,owner,location,updated_at');
-    if (error) {
-      setErrorMsg(error.message);
-      setToys([]);
-    } else {
-      setErrorMsg(null);
-      setToys((data as any[]) || []);
+  };
+
+  const loadCache = () => {
+    if (Platform.OS !== 'web') return null;
+    try {
+      const raw = localStorage.getItem('pinme_stats_toys');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as Toy[];
+    } catch {}
+    return null;
+  };
+
+  const saveCache = (data: any[]) => {
+    if (Platform.OS !== 'web') return;
+    try {
+      localStorage.setItem('pinme_stats_toys', JSON.stringify(data || []));
+    } catch {}
+  };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const offline = Platform.OS === 'web' && typeof navigator !== 'undefined' && !(navigator as any).onLine;
+      if (offline) {
+        const cached = loadCache();
+        if (cached && cached.length > 0) {
+          setErrorMsg('Offline');
+          setToys(cached);
+        } else {
+          setErrorMsg('Offline');
+          setToys([]);
+        }
+        return;
+      }
+      let success = false;
+      let lastErr: string | null = null;
+      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+        try {
+          const res = await withTimeout(fetchToysOnce(), 5000 + attempt * 2000);
+          if ((res as any).error) {
+            const err = (res as any).error;
+            const msg = err?.message || '';
+            if (/permission|auth|jwt|token/i.test(msg)) {
+              try { await supabase.auth.refreshSession(); } catch {}
+              continue;
+            } else {
+              lastErr = msg;
+            }
+          } else {
+            const next = ((res as any).data as any[]) || [];
+            setToys(next);
+            saveCache(next);
+            setErrorMsg(null);
+            success = true;
+          }
+        } catch (e: any) {
+          lastErr = e?.message || 'Failed to load stats';
+        }
+        if (!success) await new Promise(r => setTimeout(r, 800));
+      }
+      if (!success) {
+        const cached = loadCache();
+        if (cached && cached.length > 0) {
+          setErrorMsg(lastErr === 'Request timeout' ? 'Network timeout' : (lastErr || 'Failed to load stats'));
+          setToys(cached);
+        } else {
+          setErrorMsg(lastErr === 'Request timeout' ? 'Network timeout' : (lastErr || 'Failed to load stats'));
+          setToys([]);
+        }
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    // 首次加载时仅在有会话时抓取数据，避免未登录时返回空数据
+    fetchData();
+    const cached = loadCache();
+    if (cached && cached.length > 0) {
+      setToys(cached);
+      setLoading(false);
+    }
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session) fetchData();
+      if (data.session) {
+        fetchData();
+      } else {
+        setLoading(false);
+      }
     });
-    // 登录态变化时重新抓取
-    const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((evt) => {
       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
         fetchData();
       } else if (evt === 'SIGNED_OUT') {
         setToys([]);
+        setLoading(false);
       }
     });
     return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
   }, []);
 
-  // Re-fetch when parent triggers a refresh
   useEffect(() => {
     if (refreshSignal !== undefined) {
       fetchData();
     }
   }, [refreshSignal]);
 
+  // Data processing
   const total = toys.length;
   const inCount = useMemo(() => toys.filter(t => t.status === 'in').length, [toys]);
   const outCount = useMemo(() => toys.filter(t => t.status === 'out').length, [toys]);
@@ -74,10 +155,7 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
     return map;
   }, [toys]);
 
-  const ownersCount = useMemo(() => Object.keys(byOwner).length, [byOwner]);
   const ownerEntries = useMemo(() => Object.entries(byOwner).sort((a,b)=>b[1]-a[1]), [byOwner]);
-  
-  // Fix donut chart data calculation - use actual owner data sum
   const ownerTotal = useMemo(() => ownerEntries.reduce((sum, [, count]) => sum + count, 0), [ownerEntries]);
   
   const ownerColors = useMemo(() => {
@@ -88,8 +166,7 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
   }, [ownerEntries]);
 
   const sortedCategories = useMemo(() => Object.entries(byCategory).sort((a,b)=>b[1]-a[1]), [byCategory]);
-  const TOP_N = 3;
-  const topCategories = useMemo(() => sortedCategories.slice(0, TOP_N).map(([k]) => k), [sortedCategories]);
+  const topCategories = useMemo(() => sortedCategories.slice(0, 3).map(([k]) => k), [sortedCategories]);
 
   const last7Days = useMemo(() => {
     const days: number[] = Array.from({ length: 7 }, () => 0);
@@ -116,284 +193,272 @@ export default function StatsScreen({ embedded = false, refreshSignal }: Props) 
     return buckets;
   }, [toys]);
 
-  // When embedded in other screens (e.g., Home), remove big card backgrounds/elevation
-  const cardStyle = {
-    surface: embedded
-      ? { backgroundColor: theme.colors.surface, elevation: 0, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }
-      : { backgroundColor: theme.colors.surface, borderRadius: 24, elevation: 6 },
-    secondary: embedded
-      ? { backgroundColor: theme.colors.surface, elevation: 0, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }
-      : { backgroundColor: theme.colors.secondaryContainer, borderRadius: 24, elevation: 6 },
-    tertiary: embedded
-      ? { backgroundColor: theme.colors.surface, elevation: 0, borderWidth: 2, borderColor: theme.colors.surfaceVariant, borderRadius: 16 }
-      : { backgroundColor: theme.colors.tertiaryContainer, borderRadius: 24, elevation: 6 },
+  // Layout & Styles
+  const isWeb = Platform.OS === 'web';
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+  const cardBase = {
+      backgroundColor: '#FFFFFF',
+      borderRadius: 24,
+      marginBottom: 16,
+      padding: 16,
+      // Soft shadow
+      ...Platform.select({
+        web: { boxShadow: '0px 4px 12px rgba(0,0,0,0.05)' },
+        default: { elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4 }
+      })
   } as const;
-  const contentPadding = embedded ? { padding: 12 } : { padding: 20 };
 
-  const titleStyle = { textAlign: 'center', fontWeight: 'bold', color: '#FF6B9D' } as const;
+  if (loading && toys.length === 0) {
+    const loadingView = (
+      <View style={{ padding: 32, alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text style={{ marginTop: 16, color: theme.colors.secondary, fontSize: 16, fontFamily: headerFont }}>Loading stats...</Text>
+      </View>
+    );
+    if (embedded) return loadingView;
+    return <View style={{ flex: 1 }}>{loadingView}</View>;
+  }
 
-  const content = (
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+  const innerContent = (
+    <>
         {errorMsg && (
-          <Card style={[styles.fullCard, { backgroundColor: theme.colors.errorContainer }]}> 
-            <Card.Content>
-              <Text style={{ color: theme.colors.onErrorContainer, fontWeight: '600' }}>Failed to load data: {errorMsg}</Text>
-            </Card.Content>
-          </Card>
+          <View style={[cardBase, { backgroundColor: '#FFEBEE' }]}>
+              <Text style={{ color: '#C62828', fontFamily: headerFont }}>Error: {errorMsg}</Text>
+              <View style={{ marginTop: 8, flexDirection: 'row', justifyContent: 'flex-end' }}>
+                <Button mode="outlined" onPress={fetchData}>Retry</Button>
+              </View>
+          </View>
         )}
 
-        {/* Statistics card grid - more cartoon-like style */}
-        <View style={styles.grid}>
-          {(
-            embedded
-              ? ['in', 'out']
-              : ['total', 'in', 'out', 'owners']
-          ).map((variant) => {
-            const valueMap: Record<string, number> = {
-              total: total,
-              in: inCount,
-              out: outCount,
-              owners: ownersCount,
-            };
-            return (
-              <TagCard key={variant} variant={variant as any} value={valueMap[variant]} />
-            );
-          })}
+        {/* 1. Top Cards (In Place / Playing) */}
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+            {/* IN PLACE */}
+            <View style={[cardBase, { flex: 1, backgroundColor: '#E0F2F1', alignItems: 'center', justifyContent: 'center', minHeight: 110, padding: 16, marginBottom: 0 }]}>
+                <MaterialCommunityIcons name="home" size={32} color="#00695C" style={{ marginBottom: 4 }} />
+                <Text style={{ color: '#00695C', fontSize: 12, fontWeight: 'bold', letterSpacing: 1, fontFamily: headerFont }}>IN PLACE</Text>
+                <Text style={{ marginTop: 6, color: theme.colors.primary, fontSize: 20, fontWeight: '700', fontFamily: headerFont }}>{inCount}</Text>
+            </View>
+            {/* PLAYING */}
+            <View style={[cardBase, { flex: 1, backgroundColor: '#F3E5F5', alignItems: 'center', justifyContent: 'center', minHeight: 110, padding: 16, marginBottom: 0 }]}>
+                <MaterialCommunityIcons name="controller-classic" size={32} color="#6A1B9A" style={{ marginBottom: 4 }} />
+                <Text style={{ color: '#6A1B9A', fontSize: 12, fontWeight: 'bold', letterSpacing: 1, fontFamily: headerFont }}>PLAYING</Text>
+                <Text style={{ marginTop: 6, color: theme.colors.primary, fontSize: 20, fontWeight: '700', fontFamily: headerFont }}>{outCount}</Text>
+            </View>
         </View>
 
-        {/* Donut chart - fix data calculation */}
-        <Card style={[styles.fullCard, cardStyle.surface]}>
-          <Card.Content style={{ alignItems: 'center', padding: embedded ? 0 : 24 }}>
-            <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
-              Toy Owner Distribution 👥
-            </Text>
-            <Svg width={220} height={220}>
-              {/* Background circle disabled in embedded mode to avoid grey band */}
-              {!embedded && (
-                <Circle cx={110} cy={110} r={100} stroke={theme.colors.surfaceVariant} strokeWidth={20} fill="none" />
-              )}
-              <G rotation={-90} originX={110} originY={110}>
-                {ownerEntries.map(([own, count], idx) => {
-                  const radius = 100;
-                  const circumference = 2 * Math.PI * radius;
-                  // Use ownerTotal instead of total
-                  const segLen = circumference * (count / Math.max(1, ownerTotal));
-                  const offset = circumference * (ownerEntries.slice(0, idx).reduce((acc, [,c]) => acc + c, 0) / Math.max(1, ownerTotal));
-                  return (
-                    <Circle
-                      key={own}
-                      cx={110}
-                      cy={110}
-                      r={radius}
-                      stroke={ownerColors[own]}
-                      strokeWidth={20}
-                      fill="none"
-                      strokeDasharray={`${segLen} ${circumference}`}
-                      strokeDashoffset={-offset}
-                      strokeLinecap="round"
-                    />
-                  );
+        {/* 2. Owner Distribution */}
+        <View style={cardBase}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24, gap: 8 }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.colors.primary, fontFamily: headerFont }}>Owner Distribution</Text>
+            <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#F3E5F5', alignItems: 'center', justifyContent: 'center' }}>
+                     <MaterialCommunityIcons name="chart-pie" size={18} color="#8E24AA" />
+                </View>
+            </View>
+            <View style={{ flexDirection: isWeb ? 'row' : 'column', alignItems: 'center', gap: 24 }}>
+                <Svg width={180} height={180}>
+                     <G rotation={-90} originX={90} originY={90}>
+                        {ownerEntries.map(([own, count], idx) => {
+                          const radius = 70;
+                          const circumference = 2 * Math.PI * radius;
+                          const segLen = circumference * (count / Math.max(1, ownerTotal));
+                          const offset = circumference * (ownerEntries.slice(0, idx).reduce((acc, [,c]) => acc + c, 0) / Math.max(1, ownerTotal));
+                          return (
+                            <Circle
+                              key={own}
+                              cx={90}
+                              cy={90}
+                              r={radius}
+                              stroke={ownerColors[own]}
+                              strokeWidth={25}
+                              fill="none"
+                              strokeDasharray={`${segLen} ${circumference}`}
+                              strokeDashoffset={-offset}
+                              strokeLinecap="butt"
+                            />
+                          );
+                        })}
+                     </G>
+                     <SvgText x={90} y={85} textAnchor="middle" fontSize={28} fontWeight="bold" fill="#37474F" fontFamily={headerFont}>
+                        {ownerTotal}
+                     </SvgText>
+                     <SvgText x={90} y={105} textAnchor="middle" fontSize={12} fill="#90A4AE" letterSpacing={1} fontFamily={headerFont}>
+                        TOTAL
+                     </SvgText>
+                </Svg>
+                <View style={{ flex: 1, width: '100%', gap: 10, alignItems: 'stretch' }}>
+                    {ownerEntries.map(([name, count]) => {
+                        return (
+                            <View
+                              key={name}
+                              style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                width: '70%',
+                                alignSelf: 'center',
+                                backgroundColor: '#FFF9C4',
+                                borderRadius: 20,
+                                paddingVertical: 10,
+                                paddingHorizontal: 12
+                              }}
+                            >
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: ownerColors[name] }} />
+                                <Text style={{ fontWeight: '600', color: theme.colors.onSurfaceVariant, fontFamily: headerFont, textAlign: 'left' }}>{name}</Text>
+                              </View>
+                              <Text
+                                style={{
+                                  fontWeight: 'bold',
+                                  color: theme.colors.primary,
+                                  fontFamily: headerFont,
+                                  textAlign: 'right',
+                                  marginLeft: 8
+                                }}
+                              >
+                                {count}
+                              </Text>
+                            </View>
+                        );
+                    })}
+                </View>
+            </View>
+        </View>
+
+        {/* 3. Popular Categories */}
+        <View style={cardBase}>
+             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.colors.primary, marginRight: 8, fontFamily: headerFont }}>Popular Categories</Text>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#FFF8E1', alignItems: 'center', justifyContent: 'center' }}>
+                     <Text style={{ fontSize: 18 }}>🏆</Text>
+                </View>
+            </View>
+            <View style={{ gap: 16 }}>
+                {topCategories.map((cat, idx) => {
+                    const pillColors = [
+                        { bg: '#FCE4EC', text: '#E91E63' }, // Pink
+                        { bg: '#E0F2F1', text: '#009688' }, // Teal
+                        { bg: '#E1F5FE', text: '#039BE5' }  // Blue
+                    ];
+                    const style = pillColors[idx % 3];
+                    return (
+                        <View key={cat} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: ['#FFF9C4', '#F5F5F5', '#FFE0B2'][idx], alignItems: 'center', justifyContent: 'center', marginRight: 16 }}>
+                                 <MaterialCommunityIcons name={idx===0?'medal':'medal-outline'} size={24} color={['#FBC02D', '#9E9E9E', '#F57C00'][idx]} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#263238', fontFamily: headerFont }}>{cat}</Text>
+                                <Text style={{ fontSize: 12, color: '#90A4AE', fontFamily: headerFont }}>Top selection</Text>
+                            </View>
+                            <View style={{ backgroundColor: style.bg, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 }}>
+                                <Text style={{ color: style.text, fontWeight: 'bold', fontSize: 12, fontFamily: headerFont }}>{byCategory[cat]} items</Text>
+                            </View>
+                        </View>
+                    );
                 })}
-              </G>
-              {/* Center text */}
-              <SvgText x={110} y={105} textAnchor="middle" fontSize={24} fontWeight="bold" fill={theme.colors.onSurface}>
-                {ownerTotal}
-              </SvgText>
-              <SvgText x={110} y={125} textAnchor="middle" fontSize={14} fill={theme.colors.onSurfaceVariant}>
-                Total
-              </SvgText>
-            </Svg>
-            <View style={styles.legend}>
-              {ownerEntries.map(([own]) => (
-                <View style={styles.legendItem} key={own}>
-                  <View style={[styles.legendSwatch, { backgroundColor: ownerColors[own] }]} />
-                  <Text style={[styles.legendLabel, { color: theme.colors.onSurface }]}>{own} ({byOwner[own]})</Text>
-                </View>
-              ))}
             </View>
-        </Card.Content>
-      </Card>
+        </View>
 
-      {/* App Version section removed per request */}
-
-      {/* Statistics by category */}
-      <Card style={[styles.fullCard, cardStyle.secondary]}>
-        <Card.Content style={contentPadding}>
-          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
-            Top 3 Popular Categories 🏆
-          </Text>
-          {sortedCategories.slice(0, 3).map(([cat, count], idx) => {
-            const colors = ['#FF6B9D', '#4ECDC4', '#45B7D1'];
-            const medals = ['🥇', '🥈', '🥉'];
-            return (
-              <View key={cat} style={[styles.rowBetween, { marginBottom: 12, padding: 12, backgroundColor: 'transparent', borderRadius: 16 }]}>
-                <View style={styles.rowCenter}>
-                  <Text style={{ fontSize: 20, marginRight: 8 }}>{medals[idx]}</Text>
-                  <Text variant="bodyLarge" style={{ fontWeight: '600' }}>{cat}</Text>
+        {/* 4. Storage Locations */}
+        <View style={cardBase}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.colors.primary, marginRight: 8, fontFamily: headerFont }}>Storage Locations</Text>
+                <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#FFEBEE', alignItems: 'center', justifyContent: 'center' }}>
+                     <MaterialCommunityIcons name="map-marker" size={18} color="#D32F2F" />
                 </View>
-                <View style={[styles.badge, { backgroundColor: colors[idx] }]}>
-                  <Text variant="labelMedium" style={{ color: 'white', fontWeight: 'bold' }}>{count}</Text>
-                </View>
-              </View>
-            );
-          })}
-        </Card.Content>
-      </Card>
-
-      {/* Statistics by location */}
-      <Card style={[styles.fullCard, cardStyle.tertiary]}>
-        <Card.Content style={contentPadding}>
-          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
-            Location Distribution 📍
-          </Text>
-          {Object.entries(byLocation).sort((a,b)=>b[1]-a[1]).slice(0, 5).map(([loc, count]) => (
-            <View key={loc} style={[styles.rowBetween, { marginBottom: 12, padding: 12, backgroundColor: 'transparent', borderRadius: 16 }]}>
-              <Text variant="bodyLarge" style={{ fontWeight: '600' }}>📍 {loc}</Text>
-              <View style={[styles.badge, { backgroundColor: '#96CEB4' }]}>
-                <Text variant="labelMedium" style={{ color: 'white', fontWeight: 'bold' }}>{count}</Text>
-              </View>
             </View>
-          ))}
-        </Card.Content>
-      </Card>
+            <View style={{ gap: 24 }}>
+                {Object.entries(byLocation).sort((a,b)=>b[1]-a[1]).slice(0, 4).map(([loc, count], idx) => {
+                    const colors = ['#FF4081', '#00BFA5', '#7C4DFF', '#FFA000'];
+                    const color = colors[idx % colors.length];
+                    const percent = count / Math.max(1, total);
+                    return (
+                        <View key={loc}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <Text style={{ marginRight: 8, fontSize: 16 }}>{['🏠','🌳','🛏️','🛋️'][idx%4]}</Text>
+                                    <Text style={{ fontWeight: '600', color: '#37474F', fontSize: 15, fontFamily: headerFont }}>{loc}</Text>
+                                </View>
+                                <Text style={{ fontWeight: 'bold', color: '#90A4AE', fontFamily: headerFont }}>{Math.round(percent*100)}%</Text>
+                            </View>
+                            <View style={{ height: 12, backgroundColor: '#F5F5F5', borderRadius: 6, overflow: 'hidden' }}>
+                                <View style={{ width: `${percent*100}%`, height: '100%', backgroundColor: color, borderRadius: 6 }} />
+                            </View>
+                        </View>
+                    );
+                })}
+            </View>
+        </View>
 
-      {/* Bar Chart */}
-      <Card style={[styles.fullCard, cardStyle.surface]}>
-        <Card.Content style={contentPadding}>
-          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
-            Last 7 Days Activity 📊
-          </Text>
-          <View style={styles.rowCenter}>
-            {last7Days.map((count, idx) => {
-              const maxCount = Math.max(...last7Days, 1);
-              const height = Math.max(8, (count / maxCount) * 80);
-              return (
-                <View key={idx} style={{ alignItems: 'center', flex: 1 }}>
-                  <View style={[styles.bar, { height, backgroundColor: '#FF6B9D', borderRadius: 8 }]} />
-                  <Text variant="labelSmall" style={{ marginTop: 4, fontWeight: '600' }}>
-                    {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][idx]}
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
-        </Card.Content>
-      </Card>
-
-      {/* Progress Bars */}
-      <Card style={[styles.fullCard, cardStyle.surface]}>
-        <Card.Content style={contentPadding}>
-          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
-            Category Progress 🎯
-          </Text>
-          {topCategories.map((cat) => {
-            const count = byCategory[cat] || 0;
-            const progress = count / Math.max(1, total);
-            return (
-              <View key={cat} style={{ marginBottom: 16 }}>
-                <View style={styles.rowBetween}>
-                  <Text variant="bodyMedium" style={{ fontWeight: '600' }}>{cat}</Text>
-                  <Text variant="bodySmall" style={{ fontWeight: '600', color: '#FF6B9D' }}>{count}/{total}</Text>
-                </View>
-                <View style={[styles.progressBarBg, { borderRadius: 12, marginTop: 8 }]}>
-                  <View style={[styles.progressBarFill, { width: `${progress * 100}%`, borderRadius: 12, backgroundColor: '#FF6B9D' }]} />
-                </View>
-              </View>
-            );
-          })}
-        </Card.Content>
-      </Card>
-
-      {/* Time Distribution */}
-      <Card style={[styles.fullCard, cardStyle.surface]}>
-        <Card.Content style={contentPadding}>
-          <Text variant="titleLarge" style={[{ marginBottom: 16 }, titleStyle]}>
-            Time Distribution ⏰
-          </Text>
-          <View style={[styles.rowCenter, { alignItems: 'flex-end', minHeight: 100 }]}> 
-            {hourBuckets.map((count, idx) => {
-              const labels = ['🌅Morning', '🌞AM', '☀️Noon', '🌤️PM', '🌆Evening', '🌙Night'];
-              const maxCount = Math.max(...hourBuckets, 1);
-              const maxBarHeight = 60;
-              const height = Math.max(8, (count / maxCount) * maxBarHeight);
-              const colors = ['#FFEAA7', '#FF6B9D', '#4ECDC4', '#45B7D1', '#96CEB4', '#DDA0DD'];
-              return (
-                <View key={idx} style={{ flex: 1, marginHorizontal: 2 }}>
-                  <View style={{ height: maxBarHeight, justifyContent: 'flex-end', alignItems: 'center' }}>
-                    <View style={[styles.barAlt, { height, backgroundColor: colors[idx], borderRadius: 8 }]} />
-                  </View>
-                  <Text variant="labelSmall" style={{ marginTop: 4, textAlign: 'center', fontWeight: '600' }}>
-                    {labels[idx]}
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
-        </Card.Content>
-      </Card>
-
-      </ScrollView>
-    );
+        {/* 5. Bottom Charts */}
+        <View style={{ flexDirection: isWeb ? 'row' : 'column', gap: 16 }}>
+             {/* Last 7 Days */}
+             <View style={[cardBase, { flex: 1 }]}>
+                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24 }}>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.colors.primary, marginRight: 8, fontFamily: headerFont }}>Last 7 Days</Text>
+                    <MaterialCommunityIcons name="calendar-month" size={20} color="#90A4AE" />
+                 </View>
+                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 120, paddingHorizontal: 8 }}>
+                     {last7Days.map((count, idx) => {
+                       const maxCount = Math.max(...last7Days, 1);
+                       const barHeight = (count / maxCount) * 100;
+                       return (
+                         <View key={idx} style={{ alignItems: 'center', flex: 1 }}>
+                           <View style={{ width: 24, height: 100, backgroundColor: '#FFEBEE', borderRadius: 12, justifyContent: 'flex-end', overflow: 'hidden' }}>
+                              <View style={{ width: '100%', height: `${barHeight}%`, backgroundColor: '#FF4081', borderRadius: 12 }} />
+                           </View>
+                           <Text style={{ marginTop: 8, color: '#90A4AE', fontWeight: 'bold', fontSize: 12, fontFamily: headerFont }}>
+                             {['M', 'T', 'W', 'T', 'F', 'S', 'S'][idx]}
+                           </Text>
+                         </View>
+                       );
+                     })}
+                 </View>
+             </View>
+             
+             {/* Time Dist */}
+             <View style={[cardBase, { flex: 1 }]}>
+                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24 }}>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.colors.primary, marginRight: 8, fontFamily: headerFont }}>Time Dist.</Text>
+                    <MaterialCommunityIcons name="clock-outline" size={20} color="#90A4AE" />
+                 </View>
+                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 120, paddingHorizontal: 8 }}>
+                     {hourBuckets.slice(0, 5).map((count, idx) => {
+                       const maxCount = Math.max(...hourBuckets, 1);
+                       const barHeight = (count / maxCount) * 100;
+                       const colors = ['#FFD54F', '#FF8A80', '#4DB6AC', '#4FC3F7', '#AB47BC'];
+                       return (
+                         <View key={idx} style={{ alignItems: 'center', flex: 1 }}>
+                           <View style={{ width: 32, height: `${Math.max(10, barHeight)}%`, backgroundColor: colors[idx], borderRadius: 8 }} />
+                           <Text style={{ marginTop: 8, color: '#90A4AE', fontWeight: 'bold', fontSize: 12, fontFamily: headerFont }}>
+                             {['MO', 'AM', 'NO', 'PM', 'NI'][idx]}
+                           </Text>
+                         </View>
+                       );
+                     })}
+                 </View>
+             </View>
+        </View>
+    </>
+  );
 
   if (embedded) {
     return (
-      <View style={{ flex: 1 }}>{content}</View>
+      <View style={isWeb ? { width: '100%' } : undefined}>
+        {innerContent}
+      </View>
     );
   }
 
   return (
-    <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      {content}
-    </LinearGradient>
+    <ScrollView 
+      style={{ flex: 1 }}
+      contentContainerStyle={[
+        { padding: 16 }, 
+        isWeb && { maxWidth: 1000, alignSelf: 'center', width: '100%', paddingHorizontal: 16 }
+      ]}
+    >
+      {innerContent}
+    </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  content: { padding: 16 },
-  title: { textAlign: 'center', marginBottom: 16, fontWeight: 'bold' },
-  grid: { 
-    flexDirection: 'row', 
-    flexWrap: 'wrap', 
-    marginBottom: 16,
-    justifyContent: Platform.select({
-      web: 'center',  // Web center alignment
-      default: 'space-between',
-    }),
-  },
-  card: { 
-    flex: Platform.select({
-      web: 0,  // Web no flex
-      default: 1,
-    }),
-    marginHorizontal: 4, 
-    borderRadius: 20,
-    width: Platform.select({
-      web: 140,  // Web fixed width
-      default: undefined,
-    }),
-  },
-  fullCard: { marginBottom: 16, elevation: 6 },
-  rowCenter: { flexDirection: 'row', alignItems: 'center' },
-  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  badge: { 
-    paddingHorizontal: 12, 
-    paddingVertical: 6, 
-    borderRadius: 16, 
-    minWidth: 32,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  bar: { width: 24, backgroundColor: '#FF6B9D', borderRadius: 8 },
-  barAlt: { width: 24, backgroundColor: '#4ECDC4', borderRadius: 8 },
-  progressRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  progressLabel: { flex: 1, fontSize: 14, fontWeight: '600' },
-  progressValue: { marginLeft: 8, fontSize: 12, fontWeight: '600' },
-  progressBarBg: { flex: 1, height: 8, backgroundColor: '#EEE', borderRadius: 12, marginHorizontal: 8 },
-  progressBarFill: { height: 8, backgroundColor: '#FF6B9D', borderRadius: 12 },
-  progressBarFillOwner: { height: 8, backgroundColor: '#6A5ACD', borderRadius: 12 },
-  legend: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginTop: 16 },
-  legendItem: { flexDirection: 'row', alignItems: 'center', marginRight: 16, marginBottom: 8 },
-  legendSwatch: { width: 16, height: 16, borderRadius: 8, marginRight: 8 },
-  legendLabel: { fontSize: 12, fontWeight: '600' },
-});
