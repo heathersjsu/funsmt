@@ -633,6 +633,7 @@ export default function AddDeviceUIScreen() {
                   b64Encode('HEARTBEAT_NOW')
                 );
                 try { console.log('[AddDevice] HEARTBEAT_NOW sent'); } catch {}
+                showInlineMsg('Device Provisioned Successfully', 'success');
               } catch (e: any) {
                 showInlineMsg(`auto send jwt failed: ${e?.message || String(e)}`, 'error');
                 setInlineVisible(true);

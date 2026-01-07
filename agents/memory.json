@@ -1,10 +1,28 @@
 {
   "project_info": {
     "name": "pinme",
-    "description": "React Native app with Expo, Supabase, and Voice capabilities",
-    "last_updated": "2025-12-18"
+    "description": "React Native app with Expo, Supabase, and Voice capabilities. Integrated with ESP32 UHF RFID.",
+    "last_updated": "2026-01-06"
   },
   "features": {
+    "rfid_integration": {
+      "status": "stable",
+      "key_components": [
+        "esp32/device_setup/SupabaseCommands.h", 
+        "esp32/device_setup/RfidCommands.h",
+        "src/screens/Me/EnvironmentCheckScreen.tsx"
+      ],
+      "config": {
+        "smart_poll_retries": 10,
+        "default_query_params": "0x1104 (S1, Q=4)",
+        "commands": ["RFID_POLL_RETRY_SMART", "RFID_QUERY_SET_RAW", "RFID_FH_SET", "RFID_POLL_SINGLE"]
+      },
+      "issues_resolved": [
+        "Error Code 15 (No Tag Found)",
+        "Fixed Channel Interference (Auto Freq Hopping)",
+        "Infinite Loop of Old Commands on Boot"
+      ]
+    },
     "voice_command": {
       "status": "active",
       "key_components": ["src/screens/Voice/VoiceCommandScreen.tsx", "App.tsx"],
@@ -21,12 +39,9 @@
       ]
     },
     "dev_environment": {
-      "status": "approved_for_execution",
-      "issues": ["Dev Client connection failed"],
-      "fixes": ["ADB port forwarding", "Tunnel mode"],
-      "pending_tasks": ["Rebuild Android Dev Client", "Start Expo Tunnel"],
-      "last_action": "User accepted plan"
+      "status": "stable",
+      "last_action": "Verified RFID via EnvironmentCheckScreen"
     }
   },
-  "version": "2025.12.18"
+  "version": "2026.01.06"
 }

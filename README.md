@@ -100,4 +100,26 @@ eas build -p android --profile production
 eas build -p ios --profile production
 eas submit -p android
 eas submit -p ios
+
+## RFID 硬件集成 (ESP32)
+
+本项目包含完整的 ESP32 固件代码，用于驱动 UHF RFID 读写器模块并与 Supabase 后端通信。
+
+### 核心功能
+- **智能轮询 (Smart Poll)**: 自动重试机制 (Max 10次)，遇到 `Code 15` (No Tag) 时自动降级参数 (Q=1 -> Q=0) 并切换信道。
+- **自动跳频 (Auto Frequency Hopping)**: 支持发送 `0xAD` 指令开启读写器自动跳频，解决固定信道干扰问题。
+- **远程指令系统**: ESP32 轮询 Supabase `testuart` 表获取指令 (`RFID_POLL_SINGLE`, `RFID_QUERY_SET_RAW` 等)，并将结果写回数据库。
+- **心跳与状态**: 实时上报设备在线状态与 WiFi/MQTT 连接情况。
+
+### 固件路径
+- `esp32/device_setup/`: Arduino/PlatformIO 工程源码。
+  - `SupabaseCommands.h`: 指令解析与 HTTP 请求逻辑。
+  - `RfidCommands.h`: RFID 帧构建 (Header-Type-Cmd-PL-Payload-Checksum-End)。
+  - `RfidParser.h`: 响应帧解析与错误码处理。
+
+### 常用调试指令
+- **Smart Poll**: `RFID_POLL_RETRY_SMART` (推荐，自动处理重试与参数调整)
+- **Raw Query**: `RFID_QUERY_SET_RAW 1104` (设置 S1, Q=4)
+- **Auto FH**: `RFID_FH_SET 255` (开启自动跳频)
+
 ```

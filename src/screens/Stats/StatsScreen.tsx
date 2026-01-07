@@ -1,16 +1,19 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useContext } from 'react';
 import { View, ScrollView, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { Text, useTheme, Button } from 'react-native-paper';
 import { supabase } from '../../supabaseClient';
 import { Toy } from '../../types';
 import Svg, { Circle, G, Text as SvgText } from 'react-native-svg';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { AuthTokenContext } from '../../context/AuthTokenContext';
 
 type Props = { embedded?: boolean; refreshSignal?: number };
 
 import { pushLog } from '../../utils/envDiagnostics';
 
 export default function StatsScreen({ embedded = false, refreshSignal }: Props) {
+  const ctx = useContext(AuthTokenContext);
+  const userJwt = ctx?.userJwt;
   const [toys, setToys] = useState<Toy[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const theme = useTheme();

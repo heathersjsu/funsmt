@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { View, StyleSheet, Platform, Pressable, ScrollView, KeyboardAvoidingView, Alert } from 'react-native';
 import { Text, TextInput, Button, useTheme, Portal, Dialog, List, Snackbar, Menu } from 'react-native-paper';
 import { LinearGradient } from 'expo-linear-gradient';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { cartoonGradient } from '../../theme/tokens';
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -63,11 +64,24 @@ export default function DeviceEditScreen({ navigation, route }: Props) {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scrollContent}>
           
+          {/* Wi-Fi Change Warning */}
+          <View style={{ 
+            flexDirection: 'row', 
+            backgroundColor: theme.colors.errorContainer, 
+            padding: 12, 
+            borderRadius: 12, 
+            marginBottom: 24,
+            alignItems: 'center'
+          }}>
+            <MaterialCommunityIcons name="wifi-alert" size={24} color={theme.colors.error} style={{ marginRight: 12 }} />
+            <Text style={{ flex: 1, color: theme.colors.onErrorContainer, fontSize: 14 }}>
+              Note: If Wi-Fi configuration has changed, please delete this device and re-add it.
+            </Text>
+          </View>
+
           {/* Header */}
           <View style={styles.headerContainer}>
-            <Text style={[styles.headerSubtitle, { color: theme.colors.secondary }]}>
-              Update device details
-            </Text>
+            {/* Subtitle removed */}
           </View>
 
           {/* Form Fields */}
@@ -159,11 +173,12 @@ export default function DeviceEditScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   scrollContent: {
-    padding: 24,
-    paddingTop: 60,
+    paddingHorizontal: 32,
+    paddingVertical: 24,
+    paddingBottom: 150,
   },
   headerContainer: {
-    marginBottom: 32,
+    marginBottom: 24,
     alignItems: 'center',
   },
   headerTitle: {

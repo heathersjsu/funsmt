@@ -42,5 +42,40 @@
 
 ## 变更日志 (Timeline)
 - **2025-12-18 14:30:00**: 完成 UI 调整并准备发布 v2025.12.18。
+- **2025-12-18 14:35:00**: 用户指定 **保留本地文件变更** (Keep all changes)，以本地文件为准，忽略 Git 暂存区差异。
+
+# [记忆快照] 2026-01-06 12:00:00 | 版本 2026.01.06 (RFID Stable)
+
+## 核心变更
+1. **RFID 固件通信修复与优化 (ESP32)**
+   - **Error Code 15 修复**:
+     - 问题：`No Tag Found` 错误频发，参数配置不当。
+     - 解决：实现 **Smart Poll (智能轮询)** 逻辑。
+       - 策略：失败重试 Max 10次。
+       - 第3次失败：自动调整 Query 参数为 `S1, Q=1` (0x1101)。
+       - 第6次失败：自动调整 Query 参数为 `S1, Q=0` (0x1100) 并随机切换信道。
+       - 成功：一旦读到标签立即返回。
+   - **自动跳频 (Auto Frequency Hopping)**:
+     - 新增 `RFID_CMD_SET_FREQ_HOPPING` (0xAD) 指令支持。
+     - 允许读写器自动选择最佳信道，抗干扰能力增强。
+   - **指令队列优化**:
+     - 修复 **"无限重放历史指令"** Bug：设备启动时自动获取最新 ID，忽略旧的 Pending 指令。
+     - 优化日志输出：屏蔽冗余的心跳 GET 日志，仅显示有效交互。
+
+2. **App 端环境检测优化**
+   - **EnvironmentCheckScreen**:
+     - 新增 `Smart Poll` 按钮，一键触发智能重试逻辑。
+     - 新增 `Raw Query` 配置按钮 (S1/S3, Q=4/6)。
+     - 新增 `Auto Freq Hopping` 开关。
+
+## 关键文件状态
+- `esp32/device_setup/SupabaseCommands.h`: 包含 `testPollRetrySmart` 核心逻辑与队列清洗逻辑。
+- `esp32/device_setup/RfidCommands.h`: 新增 `buildSetQueryRaw` 和 `buildSetFreqHopping`。
+- `src/screens/Me/EnvironmentCheckScreen.tsx`: UI 适配新指令。
+
+## 变更日志 (Timeline)
+- **2026-01-06 10:00:00**: 收到 Code 15 报错，开始排查。
+- **2026-01-06 11:30:00**: 完成 Smart Poll 逻辑编写。
+- **2026-01-06 11:55:00**: 验证通过，标签成功读取 (RSSI -64dBm)。
 
 <!-- Context Keeper 归档，下一节点：任意角色可安全读取 -->

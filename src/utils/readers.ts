@@ -63,6 +63,7 @@ export function formatAgo(iso?: string | null): string {
   if (!iso) return '-';
   const dt = new Date(iso);
   const diff = Math.floor((Date.now() - dt.getTime()) / 60000);
+  if (diff < -1) return 'future clock'; // Timestamp is in the future (>1m)
   if (diff < 1) return 'just now';
   if (diff < 60) return `${diff} min ago`;
   const h = Math.floor(diff / 60);

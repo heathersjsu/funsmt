@@ -130,6 +130,9 @@ export default function DeviceManagementScreen({ navigation }: Props) {
   const isOnline = (d: SupabaseDevice) => {
     if (!d.last_seen) return false;
     const diff = new Date().getTime() - new Date(d.last_seen).getTime();
+    // Fix: If last_seen is in the future (negative diff), treat as offline/error if > 2 mins ahead.
+    // Allow small clock skew (e.g. -2 mins to 0).
+    if (diff < -2 * 60 * 1000) return false; 
     return diff < 2 * 60 * 1000; // < 2 mins
   };
 

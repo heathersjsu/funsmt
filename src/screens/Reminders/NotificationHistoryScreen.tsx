@@ -29,9 +29,7 @@ export default function NotificationHistoryScreen() {
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
     const filtered = (arr || []).filter((i) => {
       if (i.timestamp < cutoff) return false;
-      const { owner, toy } = parseOwnerAndToy(i.body);
-      // User requested to only show notifications that have both toy and owner
-      return !!(owner && toy);
+      return true;
     });
     setItems(filtered.slice().sort((a, b) => b.timestamp - a.timestamp));
     setLoading(false);

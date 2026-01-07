@@ -7,7 +7,11 @@ git add .
 
 # 2. Commit
 Write-Host "-> git commit" -ForegroundColor Yellow
-git commit -m "Release: v2025.12.18 - UI: Owner font style update"
+try {
+    git commit -m "Release: v2025.12.18 - UI: Owner font style update"
+} catch {
+    Write-Host "Nothing to commit, proceeding..." -ForegroundColor DarkYellow
+}
 
 # 3. Tag
 Write-Host "-> git tag v2025.12.18" -ForegroundColor Yellow

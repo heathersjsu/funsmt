@@ -326,20 +326,36 @@ export default function DeviceProvisioningScreen() {
     }
   };
   const handleWifiListMessage = (msg: string) => {
-    if (msg === 'WIFI_LIST_BEGIN') { setWifiItemsBle([]); return; }
-    if (msg.startsWith('WIFI_ITEM ')) {
-      const payload = msg.substring('WIFI_ITEM '.length);
-      const parts = payload.split('|');
-      const ssid = parts[0] ?? '';
-      const rssi = parseInt(parts[1] ?? '0', 10);
-      const enc = parts[2] ?? '';
-      setWifiItemsBle(prev => {
-        const filtered = prev.filter(i => i.ssid !== ssid);
-        return [...filtered, { ssid, rssi, enc }];
-      });
-      return;
-    }
-  };
+    if (msg === 'WIFI_LIST_BEGIN') { setWifiItemsBle([]); return; }
+    
+    // Support legacy "WIFI_ITEM " format
+    if (msg.startsWith('WIFI_ITEM ')) {
+      const payload = msg.substring('WIFI_ITEM '.length);
+      const parts = payload.split('|');
+      const ssid = parts[0] ?? '';
+      const rssi = parseInt(parts[1] ?? '0', 10);
+      const enc = parts[2] ?? '';
+      setWifiItemsBle(prev => {
+        const filtered = prev.filter(i => i.ssid !== ssid);
+        return [...filtered, { ssid, rssi, enc }];
+      });
+      return;
+    }
+
+    // Support optimized "W:" format (used in newer firmware)
+    if (msg.startsWith('W:')) {
+      const payload = msg.substring(2);
+      const parts = payload.split('|');
+      const ssid = parts[0] ?? '';
+      const rssi = parseInt(parts[1] ?? '0', 10);
+      const enc = parts[2] ?? '';
+      setWifiItemsBle(prev => {
+        const filtered = prev.filter(i => i.ssid !== ssid);
+        return [...filtered, { ssid, rssi, enc }];
+      });
+      return;
+    }
+  };
   // Output debug info to console and on-screen Debug Log, and attempt to send it to the ESP32 (if firmware supports text display)
   const postDebugToEsp32 = async (msg: string) => {
     try {
@@ -1207,8 +1223,13 @@ const scanAndShowPinmeList = async () => {
                 if (data) {
                   // 与 Supabase devices.status 保持一致，不再基于 5 分钟 last_seen 阈值
                   // Update: 改为 2 分钟超时判断，且优先信赖 last_seen
-                  const isOnline = data.last_seen && (new Date().getTime() - new Date(data.last_seen).getTime() < 2 * 60 * 1000);
-                  const onlineFlag = isOnline || String(data?.status || '').toLowerCase() === 'online';
+                  // Fix: Handle future timestamps (clock skew) - ignore if > 2 mins in future
+                  const now = new Date().getTime();
+                  const last = data.last_seen ? new Date(data.last_seen).getTime() : 0;
+                  const diff = now - last;
+                  const isOnline = data.last_seen && (diff < 2 * 60 * 1000) && (diff > -2 * 60 * 1000);
+                  // Strict mode: Online status is determined ONLY by last_seen time (user request)
+                  const onlineFlag = isOnline;
                   const hasSignal = typeof data?.wifi_signal === 'number' && !Number.isNaN(data.wifi_signal);
                   if (onlineFlag || hasSignal) {
                     clearInterval(timer);
@@ -1484,7 +1505,7 @@ const scanAndShowPinmeList = async () => {
           catch (e:any) { debug(`Step[WiFiList] FFF2 decode error: ${e?.message || e}; raw=${b64}`); msg = ''; }
           // Always track status internally, but only log list-specific messages
           updateWifiStatusFromMsg(msg);
-          if (/^(WIFI_LIST_|WIFI_ITEM\s)/.test(msg)) {
+          if (/^(WIFI_LIST_|WIFI_ITEM\s|W:)/.test(msg)) {
             debug(`Step[WiFiList] FFF2 notification: ${msg}`);
           }
           if (ended) return;
@@ -1517,8 +1538,25 @@ const scanAndShowPinmeList = async () => {
           }
           // Ignore non-list status messages during Wi‑Fi listing phase
           if (/^WIFI_(CONNECTING|AP_NOT_FOUND|OK|STA_CONNECTED)/i.test(msg)) { return; }
+          
+          // Legacy format
           if (msg.startsWith('WIFI_ITEM ')) {
             const payload = msg.substring('WIFI_ITEM '.length);
+            const parts = payload.split('|');
+            const ssid = parts[0] ?? '';
+            const rssi = parseInt(parts[1] ?? '0', 10);
+            const enc = parts[2] ?? '';
+            gotItem = true;
+            setWifiItemsBle(prev => {
+              const filtered = prev.filter(i => i.ssid !== ssid);
+              return [...filtered, { ssid, rssi, enc }];
+            });
+            return;
+          }
+
+          // New optimized format
+          if (msg.startsWith('W:')) {
+            const payload = msg.substring(2);
             const parts = payload.split('|');
             const ssid = parts[0] ?? '';
             const rssi = parseInt(parts[1] ?? '0', 10);

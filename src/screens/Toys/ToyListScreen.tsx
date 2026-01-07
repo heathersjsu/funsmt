@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useContext } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, ScrollView, Pressable, RefreshControl, Platform, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import { Button, Chip, Card, Text, Menu, Searchbar, Banner, useTheme, List } from 'react-native-paper';
@@ -12,11 +12,14 @@ import { formatRfidDisplay } from '../../utils/rfid';
 import { LinearGradient } from 'expo-linear-gradient'
 import { getSemanticsFromTheme, statusColors, cartoonGradient } from '../../theme/tokens';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { AuthTokenContext } from '../../context/AuthTokenContext';
 
-type Props = NativeStackScreenProps<any>;
+export type Props = NativeStackScreenProps<any>;
 
 export default function ToyListScreen({ navigation }: Props) {
   const theme = useTheme();
+  const ctx = useContext(AuthTokenContext);
+  const userJwt = ctx?.userJwt;
   const semantics = getSemanticsFromTheme(theme);
   const { width } = useWindowDimensions();
   const cardWidth = width > 1200 ? '18%' : width > 900 ? '23%' : width > 600 ? '31%' : '48%';
@@ -364,14 +367,14 @@ export default function ToyListScreen({ navigation }: Props) {
 
   useEffect(() => {
     fetchToys();
-  }, [sort, categoryFilter, ownerFilter, query]);
+  }, [sort, categoryFilter, ownerFilter, query, userJwt]);
 
   // Also refresh when the screen gains focus (e.g., after navigating from Login)
   useFocusEffect(
     useCallback(() => {
       fetchToys();
       return () => {};
-    }, [sort, categoryFilter, ownerFilter, query])
+    }, [sort, categoryFilter, ownerFilter, query, userJwt])
   );
 
   const formatLastPlayed = (dateStr: string) => {

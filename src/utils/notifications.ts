@@ -119,23 +119,7 @@ export async function recordNotificationHistory(title: string, body: string | un
        return;
     }
 
-    // Only add the new item if it is valid (has owner and toy)
-    // Exception: If the user specifically wants to enforce this rule for ALL notifications including new ones.
-    // The requirement says "Only keep notifications that contain ...".
-    // So if the new notification doesn't have owner/toy, we should NOT record it?
-    // "notification里 删除 ... 只保留 ... 都包含的通知"
-    // Yes, effectively we should not record it if it doesn't match.
-    // However, recordNotificationHistory is called for 'localDaily' which we know fails this check.
-    // If I block it here, localDaily notifications will never appear.
-    // Is that intended?
-    // "notification里 删除 最底下只有两个项目 时间.类型 的通知" -> "In notification [list/history], delete the ones at the bottom that only have Time.Type".
-    // "只保留 时间.类型.玩具名. owner 都包含的通知" -> "Only keep notifications that contain Time, Type, ToyName, Owner".
-    // This implies that notifications WITHOUT toy/owner are unwanted.
-    // So yes, I should prevent adding them too.
-    const { owner, toy } = parseOwnerAndToy(body);
-    if (owner && toy) {
-      items.push({ id, title, body, timestamp: now, source });
-    }
+    items.push({ id, title, body, timestamp: now, source });
 
     await saveHistory(items);
     
@@ -150,11 +134,6 @@ export async function recordNotificationHistory(title: string, body: string | un
       const { data: userRes } = await supabase.auth.getUser();
       const uid = userRes?.user?.id;
       if (uid) {
-        // Also check validity before syncing to Supabase?
-        // User asked to delete "actual stored data". Supabase is also storage.
-        // But maybe they meant local storage shown in the app.
-        // I will sync only if valid to be consistent.
-        if (owner && toy) {
           await supabase.from('notification_history').insert({
             user_id: uid,
             title,
@@ -162,7 +141,6 @@ export async function recordNotificationHistory(title: string, body: string | un
             source,
             created_at: new Date(now).toISOString(),
           });
-        }
       }
     } catch {}
   });
@@ -171,14 +149,8 @@ export async function recordNotificationHistory(title: string, body: string | un
 export async function getNotificationHistory(): Promise<NotificationHistoryItem[]> {
   return await withHistoryLock(async () => {
     let items = await loadHistory();
-    const originalCount = items.length;
-    items = items.filter(it => {
-       const { owner, toy } = parseOwnerAndToy(it.body);
-       return !!(owner && toy);
-    });
-    if (items.length !== originalCount) {
-      await saveHistory(items);
-    }
+    // No longer filter out items without owner/toy to ensure history matches badge count
+    // and user can see all system notifications.
     return items;
   });
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useContext } from 'react';
 import { View, StyleSheet, ScrollView, Animated, Pressable, Platform, RefreshControl } from 'react-native';
 import { Card, Text, useTheme } from 'react-native-paper';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -8,46 +8,61 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { cartoonGradient } from '../../theme/tokens';
 import { BouncyIconButton } from '../../components/BouncyIconButton';
+import { AuthTokenContext } from '../../context/AuthTokenContext';
 
 type Props = NativeStackScreenProps<any>;
 
 export default function HomeScreen({ navigation }: Props) {
   const theme = useTheme();
+  const ctx = useContext(AuthTokenContext);
+  const userJwt = ctx?.userJwt;
   const [userName, setUserName] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
+
+  const loadUserProfile = async () => {
+    try {
+      // 优先使用 getUser 获取最新的用户信息
+      const { data: { user }, error } = await supabase.auth.getUser();
+      
+      if (user) {
+        const name = (user.user_metadata?.full_name as string) || (user.email as string) || '';
+        setUserName(name);
+        setUserId(user.id);
+      } else {
+        // 如果 getUser 失败，尝试从 session 获取
+        const { data: { session } } = await supabase.auth.getSession();
+        const sessionUser = session?.user;
+        if (sessionUser) {
+          const name = (sessionUser.user_metadata?.full_name as string) || (sessionUser.email as string) || '';
+          setUserName(name);
+          setUserId(sessionUser.id);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load user profile:', e);
+    }
+  };
+
   useEffect(() => {
-    // 初始化读取会话中的用户
-    supabase.auth.getSession().then(({ data }) => {
-      const user = data.session?.user;
-      const name = (user?.user_metadata?.full_name as string) || (user?.email as string) || '';
-      setUserName(name);
-      setUserId(user?.id || '');
-    });
+    loadUserProfile();
+
     // 订阅登录态，保证刷新后数据能及时更新
     const { data: sub } = supabase.auth.onAuthStateChange((evt, session) => {
-      const user = session?.user;
       if (evt === 'INITIAL_SESSION' || evt === 'SIGNED_IN' || evt === 'TOKEN_REFRESHED') {
-        const name = (user?.user_metadata?.full_name as string) || (user?.email as string) || '';
-        setUserName(name);
-        setUserId(user?.id || '');
+        loadUserProfile();
       } else if (evt === 'SIGNED_OUT') {
         setUserName('');
         setUserId('');
       }
     });
     return () => { try { sub?.subscription?.unsubscribe(); } catch {} };
-  }, []);
+  }, [userJwt]); // 当 userJwt 变化时也尝试重新加载
 
   const onRefresh = async () => {
     setRefreshing(true);
-    // Refresh user profile
-    const { data } = await supabase.auth.getUser();
-    const user = data?.user;
-    const name = (user?.user_metadata?.full_name as string) || (user?.email as string) || '';
-    setUserName(name);
-    setUserId(user?.id || '');
+    await loadUserProfile();
     
     // Trigger StatsScreen to re-fetch
     setRefreshSignal((v) => v + 1);
