@@ -12,8 +12,10 @@ String lastUartRxHex = "";
 // User specified: GPIO 16 and 17
 // GPIO 17 is UART TX (Connect to RFID RX)
 // GPIO 16 is UART RX (Connect to RFID TX)
-#define PERIPHERAL_RX_PIN 16
-#define PERIPHERAL_TX_PIN 17
+// #define PERIPHERAL_RX_PIN 16
+// #define PERIPHERAL_TX_PIN 17
+int rfidRxPin = 16;
+int rfidTxPin = 17;
 
 // Define Baud Rate (Adjust if needed, e.g., 9600, 115200)
 #define PERIPHERAL_BAUD_RATE 115200
@@ -25,15 +27,18 @@ HardwareSerial MyPeripheralSerial(2);
 const uint8_t commandBytes[] = {0xBB, 0x00, 0x03, 0x00, 0x01, 0x00, 0x04, 0x7E};
 
 void setupPeripheralUart() {
-Serial.println("[UART] setup");
+  Serial.println("[UART] setup");
   // Ensure clean state
   MyPeripheralSerial.end(); 
   delay(100);
   
+  // Increase RX buffer size to handle bursts during blocking HTTP calls
+  MyPeripheralSerial.setRxBufferSize(4096);
+
   // Configure Serial2 with 8N1
   // Explicitly verifying pins: RX=16, TX=17
   // On ESP32-S3, passing pins to begin() is usually enough, but we'll double check.
-  MyPeripheralSerial.begin(PERIPHERAL_BAUD_RATE, SERIAL_8N1, PERIPHERAL_RX_PIN, PERIPHERAL_TX_PIN);
+  MyPeripheralSerial.begin(PERIPHERAL_BAUD_RATE, SERIAL_8N1, rfidRxPin, rfidTxPin);
   delay(100); 
 
   // Force pin re-muxing if begin() didn't take
@@ -41,7 +46,7 @@ Serial.println("[UART] setup");
   // But we must NOT use pinMode() as that breaks UART.
   // We rely on begin() to do the work.
   
-  Serial.println(String("[UART] RX=") + PERIPHERAL_RX_PIN + " TX=" + PERIPHERAL_TX_PIN + " B=" + PERIPHERAL_BAUD_RATE);
+  Serial.println(String("[UART] RX=") + rfidRxPin + " TX=" + rfidTxPin + " B=" + PERIPHERAL_BAUD_RATE);
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
   Serial.println("[UART] Platform: ESP32-S3 (Pins 16/17 are safe)");
 #elif defined(ESP32) && !defined(CONFIG_IDF_TARGET_ESP32C3)
@@ -52,7 +57,8 @@ Serial.println("[UART] setup");
 }
 
 void sendRfidCommand(const uint8_t* cmd, int len) {
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
+  // Do NOT flush RX buffer blindly in async mode!
+  // while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
 
   lastUartTxHex = "";
   Serial.print("[UART] TX: ");
@@ -69,76 +75,134 @@ void sendRfidCommand(const uint8_t* cmd, int len) {
   MyPeripheralSerial.flush();
 }
 
-// Helper to wait and read response
+// Robust frame reader helper
 String readRfidResponse() {
   unsigned long startWait = millis();
   uint8_t rxBuf[256];
   int rxLen = 0;
-  bool anyData = false;
   
-  lastUartRxHex = ""; // Clear previous RX
-  Serial.println("[UART] wait RX...");
+  // State machine variables
+  // 0: Wait for Header (0xBB)
+  // 1: Wait for Length (Need 5 bytes total: BB Type Cmd PL_H PL_L)
+  // 2: Wait for Rest (Need total = 7 + PL)
+  int state = 0;
+  int expectedLen = 0;
   
-  // Wait up to 3000ms (Increased again for safety)
+  lastUartRxHex = ""; 
+  // Serial.println("[UART] wait RX..."); // Reduce spam
+  Serial.println("[UART] Waiting for bytes on RX Pin " + String(rfidRxPin) + "...");
+  
   while (millis() - startWait < 3000) {
     while (MyPeripheralSerial.available()) {
-      anyData = true;
       int b = MyPeripheralSerial.read();
       
-      // Simple debug print for EVERY byte received
+      // Debug log every byte (User requested)
+      // Print in rows of 16 for readability
+      // if (rxLen % 16 == 0) Serial.print("\n[RX_HEX] ");
+      // if (b < 0x10) Serial.print("0");
       // Serial.print(String(b, HEX) + " "); 
-
-      if (rxLen < 255) {
-        rxBuf[rxLen++] = b;
+      
+      // Safety check for buffer overflow
+      if (rxLen >= 255) {
+         Serial.println("\n[UART] Err: Buf overflow, resetting");
+         rxLen = 0;
+         state = 0;
       }
-      // If we found the end byte 0x7E, we might be done. 
-      // But let's verify min length (at least 6 bytes for a valid frame)
-      if (b == 0x7E && rxLen >= 6) {
-         goto frame_received; // Break out of both loops
+      
+      rxBuf[rxLen++] = b;
+      
+      // State Machine
+      if (state == 0) {
+        // Looking for Header
+        if (b == 0xBB) {
+           // Found header. If it wasn't at index 0, shift/reset? 
+           // For simplicity, if we find BB and rxLen > 1, we might have skipped garbage.
+           // But here we just assume if we are in state 0, we treat this as start.
+           if (rxLen > 1) {
+             // We had garbage before BB, reset buffer to just BB
+             rxBuf[0] = 0xBB;
+             rxLen = 1;
+           }
+           state = 1; 
+        } else {
+           // Not BB, ignore (garbage)
+           rxLen = 0; 
+        }
+      }
+      else if (state == 1) {
+        // Waiting for enough bytes to determine length
+        // Need BB(0), Type(1), Cmd(2), PL_H(3), PL_L(4) -> 5 bytes
+        if (rxLen >= 5) {
+           uint16_t pl = (rxBuf[3] << 8) | rxBuf[4];
+           // Total frame = Header(1)+Type(1)+Cmd(1)+PL(2) + PL_Data + CS(1)+End(1)
+           // Total = 5 + PL + 2 = 7 + PL
+           expectedLen = 7 + pl;
+           
+           // Sanity check on length (e.g. max 255)
+           if (expectedLen > 255) {
+              Serial.println("\n[UART] Err: PL too huge (" + String(pl) + "), reset");
+              rxLen = 0;
+              state = 0;
+           } else {
+              state = 2;
+           }
+        }
+      }
+      else if (state == 2) {
+        // Waiting for full frame
+        if (rxLen >= expectedLen) {
+           // Got full frame. Verify End byte
+           if (rxBuf[rxLen-1] == 0x7E) {
+              Serial.println(); // Newline after raw bytes
+              
+              // Build Hex String for debug
+              String rxHex = "";
+              for(int i=0; i<rxLen; i++) {
+                  if (rxBuf[i] < 0x10) rxHex += "0";
+                  rxHex += String(rxBuf[i], HEX) + " ";
+              }
+              rxHex.toUpperCase();
+              lastUartRxHex = rxHex;
+              // Serial.println("[UART] Frame: " + rxHex);
+              
+              return RfidParser::parseRfidFrame(rxBuf, rxLen);
+           } else {
+              Serial.println("\n[UART] Err: Missing End Byte 7E, reset");
+              // Maybe we missed the real start? Hard to recover perfectly without complex logic.
+              // Simple reset.
+              rxLen = 0;
+              state = 0;
+           }
+        }
       }
     }
-    delay(2); // Short yield
+    delay(2); 
   }
 
+  Serial.println("[UART] timeout (No bytes received or incomplete frame)");
   if (rxLen > 0) {
-    Serial.print("[UART] Partial RX: ");
-    for(int i=0; i<rxLen; i++) Serial.print(String(rxBuf[i], HEX) + " ");
-    Serial.println();
-  } else if (anyData) {
-    Serial.println("[UART] Data detected but not stored?");
+      Serial.print("[UART] Partial buffer: ");
+      for(int i=0; i<rxLen; i++) {
+          if(rxBuf[i] < 0x10) Serial.print("0");
+          Serial.print(String(rxBuf[i], HEX) + " ");
+      }
+      Serial.println();
   }
   return "Error: Timeout";
-
-frame_received:
-  if (rxLen > 0) {
-    String rxHex = "";
-    for(int i=0; i<rxLen; i++) {
-        if (rxBuf[i] < 0x10) rxHex += "0";
-        rxHex += String(rxBuf[i], HEX) + " ";
-    }
-    rxHex.toUpperCase();
-    lastUartRxHex = rxHex;
-    Serial.println("[UART] RX(" + String(rxLen) + "): " + rxHex);
-    return parseRfidFrame(rxBuf, rxLen);
-  } else {
-    Serial.println("[UART] timeout RX=" + String(PERIPHERAL_RX_PIN));
-    return "Error: Timeout";
-  }
 }
 
 String testGetInfo() {
   Serial.println("[UART] info");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
-  
   RfidCommands::buildGetInfo();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  return readRfidResponse();
+  Serial.println("[UART] waiting info resp...");
+  String res = readRfidResponse();
+  Serial.println(String("[UART] info_resp: ") + res);
+  return res;
 }
 
 String testGetPower() {
   Serial.println("[UART] pow_get");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
-  
   RfidCommands::buildGetPower();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
   return readRfidResponse();
@@ -146,39 +210,256 @@ String testGetPower() {
 
 String testSetPower(int dbm) {
   Serial.println(String("[UART] pow_set ") + dbm);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
-  
   RfidCommands::buildSetPower(dbm);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
   return readRfidResponse();
 }
 
+String testSetFreqHopping(uint8_t mode) {
+  Serial.println(String("[UART] fh_set ") + mode);
+  RfidCommands::buildSetFreqHopping(mode);
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  return readRfidResponse();
+}
+
+// Buffer for Async RX
+uint8_t asyncRxBuf[256];
+int asyncRxIdx = 0;
+
+String checkIncomingUart() {
+  // Process all available bytes (or up to a limit to avoid blocking too long)
+  int limit = 64; 
+  while (MyPeripheralSerial.available() && limit-- > 0) {
+    uint8_t b = MyPeripheralSerial.read();
+    
+    // Debug Raw Byte
+    // Serial.print(String(b, HEX) + " "); 
+
+    if (asyncRxIdx == 0 && b != 0xBB) {
+       // Skip until Header
+       continue;
+    }
+    
+    asyncRxBuf[asyncRxIdx++] = b;
+    
+    // Check for Frame End
+    if (b == 0x7E && asyncRxIdx >= 7) { // Min valid frame len is 7
+       // Try to parse
+       String res = RfidParser::parseRfidFrame(asyncRxBuf, asyncRxIdx);
+       
+       // Reset Buffer
+       asyncRxIdx = 0;
+       
+       if (!res.startsWith("Error")) {
+          return res;
+       }
+       // If Error (e.g. Checksum), we discarded the buffer.
+       // This assumes 0x7E is unique enough. 
+       // If 0x7E was part of data, we might have cut frame early.
+       // But in standard RFID frames, 0x7E is end. Escaping? 
+       // Usually standard YR9020 doesn't escape, just relies on fixed structure or assumes no 0x7E in data?
+       // Actually 0x7E is unique.
+    }
+    
+    if (asyncRxIdx >= 255) {
+       asyncRxIdx = 0; // Overflow protection
+    }
+  }
+  return "";
+}
+
 String testSinglePoll() {
   Serial.println("[UART] poll_single");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
+  // Flush handled by sendRfidCommand internally if needed, or better not flush to keep incoming data?
+  // sendRfidCommand flushes RX buffer: "while (MyPeripheralSerial.available()) MyPeripheralSerial.read();"
+  // This is BAD for async! If we are polling and data is coming, we shouldn't clear it blindly.
+  // I should remove the flush from sendRfidCommand too!
   
   RfidCommands::buildSinglePoll();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  return readRfidResponse();
+  return "Sent Success";
 }
 
 String testMultiPoll(uint16_t count) {
   Serial.println(String("[UART] poll_multi ") + count);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildMultiPoll(count);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+
+  // Collect results
+  String collected = "";
+  unsigned long start = millis();
   
-  // For Multi-poll, we might receive many notifications.
-  // This helper currently reads just one frame or timeout.
-  // We'll read the first response (notification or error) to confirm start.
-  // In a real app, we'd need a continuous loop or interrupt handler.
-  return readRfidResponse();
+  // Dynamic timeout based on count
+  // 300 tags might take 10-15s if Q=4 and many collisions/slots
+  unsigned long duration = 3000; 
+  if (count > 20) duration = 6000;
+  if (count > 100) duration = 15000; 
+  
+  while (millis() - start < duration) {
+    // If data is available, try to parse a frame
+    if (MyPeripheralSerial.available()) {
+      String res = readRfidResponse();
+      // If valid tag, append
+      if (res.startsWith("Tag:")) {
+        collected += res + "\n";
+      } else if (res != "" && !res.startsWith("Error")) {
+        // Log other non-error responses (e.g. status)
+        Serial.println("[UART] Poll Res: " + res);
+      }
+    }
+    delay(10);
+  }
+
+ if (collected.length() > 0) return collected;
+  return "Sent Success (No Tags) - Check Session/Target?";
 }
+
+// Forward Declarations
+String testStopPoll();
+String swapUartPins();
+String testGetSelectParam();
+String testSetSelectMode(uint8_t mode);
+String testSetSelectParamDefault();
+String testSetDemodulatorParams(uint8_t mixer, uint8_t ifAmp, uint16_t thrd);
+String testGetDemodulatorParams();
+String testSetRegion(uint8_t region);
+String testGetRegion();
+String testGetQuery();
+String testSetQuery(uint8_t dr, uint8_t m, uint8_t trext, uint8_t sel, uint8_t session, uint8_t target, uint8_t q);
+String testSetChannel(uint8_t chIndex);
+String testGetChannel();
+String testReadData(uint32_t ap, uint8_t mb, uint16_t sa, uint16_t dl);
+String testWriteData(uint32_t ap, uint8_t mb, uint16_t sa, uint16_t dl, const uint8_t* data, uint16_t dataLen);
+
+void runRfidInitialization() {
+  Serial.println("[UART] Starting RFID Initialization...");
+  // Give the RFID reader extra time to boot up (it might be slower than ESP32)
+  delay(3000);
+
+  // 1. Get Firmware Version
+  int retries = 5;
+  bool connected = false;
+  while(retries-- > 0) {
+      Serial.println("[UART] Init: Check FW Version...");
+      RfidCommands::buildGetInfo();
+      sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+      String res = readRfidResponse();
+      if (res != "" && !res.startsWith("Error")) {
+          Serial.println("[UART] Reader Connected. FW: " + res);
+          connected = true;
+          break;
+      }
+      delay(1000);
+  }
+
+  if (!connected) {
+      Serial.println("[UART] Init Failed: No Reader Response. Trying to swap pins (RX<->TX)...");
+      swapUartPins();
+      delay(500);
+      
+      // Retry once with swapped pins
+      retries = 3;
+      while(retries-- > 0) {
+          Serial.println("[UART] Init (Swapped): Check FW Version...");
+          RfidCommands::buildGetInfo();
+          sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+          String res = readRfidResponse();
+          if (res != "" && !res.startsWith("Error")) {
+              Serial.println("[UART] Reader Connected (Swapped). FW: " + res);
+              connected = true;
+              break;
+          }
+          delay(500);
+      }
+  }
+
+  if (!connected) {
+      Serial.println("[UART] Init Failed: No Reader Response (Even after swap)");
+      // Swap back to restore original state if user fixes wiring later
+      swapUartPins(); 
+      Serial.println("[UART] Restored default pins (RX=" + String(rfidRxPin) + " TX=" + String(rfidTxPin) + ")");
+      return;
+  }
+  
+  delay(100);
+
+  // 2. Set Region: China 900MHz (0x01)
+  Serial.println("[UART] Init: Set Region (CN 900MHz)...");
+  testSetRegion(0x01);
+  delay(100);
+
+  // 3. Set Power: 24 dBm
+  Serial.println("[UART] Init: Set Power (24 dBm)...");
+  testSetPower(24);
+  delay(100);
+
+  // 4. Auto Freq Hopping (0xFF)
+  Serial.println("[UART] Init: Set Auto Freq Hopping...");
+  testSetFreqHopping(0xFF);
+  delay(100);
+
+  // 5. Demod Params: Mixer=3, IF=6, Thrd=0x0080 (Increased Sensitivity)
+  Serial.println("[UART] Init: Set Demod Params (3,6,0x0080)...");
+  testSetDemodulatorParams(3, 6, 0x0080);
+  delay(100);
+
+  // 6. Set Mode=1
+  Serial.println("[UART] Init: Set Select Mode (1)...");
+  testSetSelectMode(1);
+  delay(100);
+
+  // 7. Query: DR=8(0), M=1, TRext=1, Sel=0(All), S=0, T=0, Q=4
+  Serial.println("[UART] Init: Set Query (DR=8, M=1, TRext=1, Sel=All, S=0, Q=4)...");
+  testSetQuery(0, 1, 1, 0, 0, 0, 4);
+  
+  Serial.println("[UART] Init Done.");
+}
+
+String testAutoInit() {
+  Serial.println("[UART] Starting Auto Init...");
+  String logs = "Auto Init Report:\n";
+
+  // 1. Set Region (China 900MHz = 0x01)
+  // Or use what was requested: "China 900MHz"
+  RfidCommands::buildSetRegion(0x01);
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  logs += "1. Region(CN900): " + readRfidResponse() + "\n";
+  delay(100);
+
+  // 2. Set Power (30dBm = 30)
+  RfidCommands::buildSetPower(30);
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  logs += "2. Power(30dBm): " + readRfidResponse() + "\n";
+  delay(100);
+
+  // 3. Set Freq Hopping (Auto = 0xFF)
+  RfidCommands::buildSetFreqHopping(0xFF);
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  logs += "3. FreqHopping(Auto): " + readRfidResponse() + "\n";
+  delay(100);
+
+  // 4. Set Select Mode (Mode 2)
+  RfidCommands::buildSetSelectMode(0x02);
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  logs += "4. SelectMode(2): " + readRfidResponse() + "\n";
+  delay(100);
+
+  // 5. Set Query (Session 0, Q=4)
+  // DR=0, M=0, TRext=1, Sel=0, Sess=0, Tgt=0, Q=4
+  // Ensure we use Session 0 for continuous reading
+  RfidCommands::buildSetQuery(0, 0, 1, 0, 0, 0, 4); 
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  logs += "5. Query(S0,Q4): " + readRfidResponse() + "\n";
+  delay(100);
+
+  Serial.println("[UART] Auto Init Done.");
+  return logs;
+}
+
 
 String testStopPoll() {
   Serial.println("[UART] poll_stop");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildStopPoll();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -187,8 +468,6 @@ String testStopPoll() {
 
 String testGetSelectParam() {
   Serial.println("[UART] sel_get");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
-  
   RfidCommands::buildGetSelectParam();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
   return readRfidResponse();
@@ -196,8 +475,6 @@ String testGetSelectParam() {
 
 String testSetSelectMode(uint8_t mode) {
   Serial.println(String("[UART] sel_mode ") + mode);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
-  
   RfidCommands::buildSetSelectMode(mode);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
   return readRfidResponse();
@@ -207,7 +484,6 @@ String testSetSelectMode(uint8_t mode) {
 // Mask: 30751FEB705C5904E3D50D70 (12 bytes)
 String testSetSelectParamDefault() {
   Serial.println("[UART] sel_set_default");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   uint8_t selParam = 0x01; // Target:0, Action:0, Mem:1(EPC)
   uint32_t ptr = 0x20;     // 32 bits offset
@@ -220,9 +496,30 @@ String testSetSelectParamDefault() {
   return readRfidResponse();
 }
 
+String swapUartPins() {
+  int temp = rfidRxPin;
+  rfidRxPin = rfidTxPin;
+  rfidTxPin = temp;
+  setupPeripheralUart(); // Re-init
+  return String("Swapped: RX=") + rfidRxPin + " TX=" + rfidTxPin;
+}
+
+String testSetDemodulatorParams(uint8_t mixer, uint8_t ifAmp, uint16_t thrd) {
+  Serial.println(String("[UART] demod_set M=") + mixer + " I=" + ifAmp + " T=" + String(thrd, HEX));
+  RfidCommands::buildSetDemodulatorParams(mixer, ifAmp, thrd);
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  return readRfidResponse();
+}
+
+String testGetDemodulatorParams() {
+  Serial.println("[UART] demod_get");
+  RfidCommands::buildGetDemodulatorParams();
+  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
+  return readRfidResponse();
+}
+
 String testSetRegion(uint8_t region) {
   Serial.println(String("[UART] region_set ") + region);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildSetRegion(region);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -231,7 +528,6 @@ String testSetRegion(uint8_t region) {
 
 String testGetRegion() {
   Serial.println("[UART] region_get");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildGetRegion();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -240,7 +536,6 @@ String testGetRegion() {
 
 String testGetQuery() {
   Serial.println("[UART] query_get");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildGetQuery();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -249,7 +544,6 @@ String testGetQuery() {
 
 String testSetQuery(uint8_t dr, uint8_t m, uint8_t trext, uint8_t sel, uint8_t session, uint8_t target, uint8_t q) {
   Serial.println(String("[UART] query_set DR=") + dr + " M=" + m + " Q=" + q);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildSetQuery(dr, m, trext, sel, session, target, q);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -258,7 +552,6 @@ String testSetQuery(uint8_t dr, uint8_t m, uint8_t trext, uint8_t sel, uint8_t s
 
 String testSetChannel(uint8_t chIndex) {
   Serial.println(String("[UART] ch_set ") + chIndex);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildSetChannel(chIndex);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -267,7 +560,6 @@ String testSetChannel(uint8_t chIndex) {
 
 String testGetChannel() {
   Serial.println("[UART] ch_get");
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildGetChannel();
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
@@ -276,20 +568,20 @@ String testGetChannel() {
 
 String testReadData(uint32_t ap, uint8_t mb, uint16_t sa, uint16_t dl) {
   Serial.println(String("[UART] read MB=") + mb + " SA=" + sa + " DL=" + dl);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
+  // while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildReadData(ap, mb, sa, dl);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  return readRfidResponse();
+  return "Sent Success";
 }
 
 String testWriteData(uint32_t ap, uint8_t mb, uint16_t sa, uint16_t dl, const uint8_t* data, uint16_t dataLen) {
   Serial.println(String("[UART] write MB=") + mb + " SA=" + sa + " DL=" + dl);
-  while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
+  // while (MyPeripheralSerial.available()) MyPeripheralSerial.read();
   
   RfidCommands::buildWriteData(ap, mb, sa, dl, data, dataLen);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  return readRfidResponse();
+  return "Sent Success";
 }
 
 void handlePeripheralLoop() {
@@ -348,6 +640,26 @@ void handlePeripheralLoop() {
     } else if (cmd.startsWith("select_mode ")) {
       int mode = cmd.substring(12).toInt(); // 0, 1, 2
       testSetSelectMode(mode);
+    } else if (cmd == "demod_get") {
+      testGetDemodulatorParams();
+    } else if (cmd.startsWith("demod_set ")) {
+      // demod_set mixer if thrd(hex)
+      // e.g. demod_set 3 7 0170
+      int p[3];
+      int start = 10;
+      for(int i=0; i<3; i++) {
+        int idx = cmd.indexOf(' ', start);
+        String v = (idx == -1) ? cmd.substring(start) : cmd.substring(start, idx);
+        if (i == 2) {
+           // Parse hex for threshold
+           p[i] = strtol(v.c_str(), NULL, 16);
+        } else {
+           p[i] = v.toInt();
+        }
+        if(idx == -1 && i < 2) break; 
+        start = idx + 1;
+      }
+      testSetDemodulatorParams(p[0], p[1], p[2]);
     } else if (cmd == "help") {
       Serial.println("Available commands:");
       Serial.println("  info");
@@ -365,10 +677,31 @@ void handlePeripheralLoop() {
       Serial.println("  select_param_get");
       Serial.println("  select_param_set_default");
       Serial.println("  select_mode <mode>");
+      Serial.println("  demod_get");
+      Serial.println("  demod_set <mixer> <if> <thrd_hex>");
     } else {
       Serial.println("Unknown command. Type 'help' for list.");
     }
   }
+}
+
+// Monitor function to catch unsolicited data from RFID reader
+void monitorUartRx() {
+    if (MyPeripheralSerial.available()) {
+        String rxHex = "";
+        int count = 0;
+        // Read up to 128 bytes or until empty
+        while (MyPeripheralSerial.available() && count < 128) {
+            uint8_t b = MyPeripheralSerial.read();
+            if (b < 0x10) rxHex += "0";
+            rxHex += String(b, HEX) + " ";
+            count++;
+            // Tiny delay to allow next byte to arrive if mid-packet
+            if (!MyPeripheralSerial.available()) delay(1);
+        }
+        rxHex.toUpperCase();
+        // Serial.println("[UART-MON] " + rxHex);
+    }
 }
 
 #endif

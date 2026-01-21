@@ -16,7 +16,7 @@
 String testSetQueryRaw(uint16_t param) {
   RfidCommands::buildSetQueryRaw(param);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  return readRfidResponse();
+  return "Sent Success";
 }
 
 String testPollRetrySmart() {
@@ -76,17 +76,63 @@ String testPollRetrySmart() {
     return "Error: Timeout (Max Retries)";
 }
 
-String testSetFreqHopping(uint8_t mode) {
-  RfidCommands::buildSetFreqHopping(mode);
-  sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  return readRfidResponse();
-}
 
 // Command polling interval
 unsigned long lastCommandPoll = 0;
 unsigned long lastHeartbeat = 0;
-const unsigned long COMMAND_POLL_INTERVAL = 1000; // 1 second
+const unsigned long COMMAND_POLL_INTERVAL = 200; // 200ms (High Speed Polling to simulate Interrupt)
 long lastExecutedId = -1;
+
+// Continuous Polling State
+bool continuousPolling = false;
+String continuousCmdId = "";
+unsigned long lastContinuousPoll = 0;
+
+void handleContinuousLoop() {
+    if (!continuousPolling) return;
+    
+    // Simple loop: Poll 30 times, report results if any
+    // We don't want to block too long, but testMultiPoll(30) is blocking.
+    // Given user requirement "ESP32 handles loop", blocking is acceptable if we still call yield/handleHttp.
+    
+    // Only poll if we have some breathing room from HTTP
+    // testMultiPoll calls readRfidResponse which has timeouts.
+    
+    Serial.println("[EC] Continuous Poll Loop...");
+    // Use smaller batch for responsiveness? User said "multipoll 30".
+    String result = testMultiPoll(30);
+    
+    // If tags found, update DB
+    if (result.indexOf("EPC=") >= 0) {
+        Serial.println("[EC] Continuous: Tags Found! Updating DB...");
+        
+        WiFiClientSecure client;
+        client.setInsecure();
+        HTTPClient http;
+        String url = supabaseUrl + "/rest/v1/testuart?id=eq." + continuousCmdId;
+        
+        if (http.begin(client, url)) {
+             http.addHeader("apikey", anonKey);
+             http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+             http.addHeader("Content-Type", "application/json");
+             
+             DynamicJsonDocument doc(2048);
+             doc["uart_result"] = result;
+             // Append timestamp to debug to show liveness
+             doc["uart_debug"] = "Continuous Mode Active\nLast Scan: " + String(millis()/1000) + "s\n" + result;
+             
+             String payload;
+             serializeJson(doc, payload);
+             http.PATCH(payload);
+             http.end();
+        }
+    }
+    
+    // Yield to let WiFi stack process
+    yield();
+    // Increase delay to avoid flooding and overheating (was 100ms)
+    delay(1000);
+}
 
 void markAsSkipped(String id) {
   Serial.println("[EC] Skipping old ID: " + id + ", patching DB...");
@@ -113,7 +159,61 @@ void markAsSkipped(String id) {
   }
 }
 
+String currentCmdId = "";
+String asyncBatchBuffer = "";
+unsigned long lastBatchSendTime = 0;
+const unsigned long BATCH_SEND_INTERVAL = 1000; // 1 second batching
+
+void processAsyncRfid() {
+  // Check for incoming data
+  String res = checkIncomingUart();
+  
+  if (res != "") {
+      Serial.println("[ASYNC] " + res);
+      if (asyncBatchBuffer.length() > 0) asyncBatchBuffer += "\n";
+      asyncBatchBuffer += res;
+  }
+
+  // Check if we need to send batch
+  // Send if:
+  // 1. Buffer has data AND time interval passed
+  // 2. Buffer is getting too large (> 1000 chars)
+  if (asyncBatchBuffer.length() > 0 && (millis() - lastBatchSendTime > BATCH_SEND_INTERVAL || asyncBatchBuffer.length() > 1000)) {
+      
+      if (currentCmdId != "") {
+          WiFiClientSecure client;
+          client.setInsecure();
+          HTTPClient http;
+          String url = supabaseUrl + "/rest/v1/testuart?id=eq." + currentCmdId;
+          
+          if (http.begin(client, url)) {
+              http.addHeader("apikey", anonKey);
+              http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+              http.addHeader("Content-Type", "application/json");
+              
+              DynamicJsonDocument doc(4096);
+              doc["uart_result"] = asyncBatchBuffer; 
+              
+              String payload;
+              serializeJson(doc, payload);
+              int code = http.PATCH(payload);
+              if (code != 200 && code != 204) {
+                 Serial.println("[ASYNC] PATCH Err: " + String(code));
+              } else {
+                 Serial.println("[ASYNC] Batch Sent (" + String(asyncBatchBuffer.length()) + " bytes)");
+              }
+              http.end();
+          }
+      }
+      
+      // Clear buffer and update time
+      asyncBatchBuffer = "";
+      lastBatchSendTime = millis();
+  }
+}
+
 void executeCommand(String cmdId, String cmdStr) {
+  currentCmdId = cmdId; // Set context
   Serial.println("\n[EC] CMD: " + cmdStr);
   String result = "";
   
@@ -137,8 +237,17 @@ void executeCommand(String cmdId, String cmdStr) {
     int count = cmdStr.substring(16).toInt();
     Serial.println("[EC] Exec: RFID_POLL_MULTI " + String(count));
     result = testMultiPoll(count);
+  } else if (cmdStr == "RFID_START_CONTINUOUS") {
+    Serial.println("[EC] Exec: RFID_START_CONTINUOUS");
+    continuousPolling = true;
+    continuousCmdId = currentCmdId;
+    result = "Continuous Mode Started";
+  } else if (cmdStr == "RFID_INIT_AUTO") {
+    Serial.println("[EC] Exec: RFID_INIT_AUTO");
+    result = testAutoInit();
   } else if (cmdStr == "RFID_POLL_STOP") {
     Serial.println("[EC] Exec: RFID_POLL_STOP");
+    continuousPolling = false;
     result = testStopPoll();
   } else if (cmdStr == "RFID_SELECT_GET") {
     Serial.println("[EC] Exec: RFID_SELECT_GET");
@@ -193,6 +302,9 @@ void executeCommand(String cmdId, String cmdStr) {
     int mode = cmdStr.substring(12).toInt();
     Serial.println("[EC] Exec: RFID_FH_SET " + String(mode));
     result = testSetFreqHopping(mode);
+  } else if (cmdStr == "RFID_SWAP_UART") {
+    Serial.println("[EC] Exec: RFID_SWAP_UART");
+    result = swapUartPins();
   } else if (cmdStr.startsWith("RFID_CHANNEL_SET ")) {
     int ch = cmdStr.substring(17).toInt();
     Serial.println("[EC] Exec: RFID_CHANNEL_SET " + String(ch));
@@ -241,6 +353,24 @@ void executeCommand(String cmdId, String cmdStr) {
         }
       } else {
         result = "Error: Invalid Args";
+      }
+  } else if (cmdStr.startsWith("BB")) {
+      // Raw Hex Command: BB ...
+      Serial.println("[EC] Exec: Raw Hex " + cmdStr);
+      String hex = cmdStr;
+      hex.replace(" ", ""); // Remove spaces
+      int len = hex.length();
+      if (len % 2 != 0) {
+          result = "Error: Odd Hex Length";
+      } else {
+          uint8_t* buf = new uint8_t[len/2];
+          for(int i=0; i<len; i+=2) {
+               char tmp[3] = {hex[i], hex[i+1], 0};
+               buf[i/2] = strtoul(tmp, NULL, 16);
+          }
+          sendRfidCommand(buf, len/2);
+          delete[] buf;
+          result = readRfidResponse();
       }
   } else {
     result = "Error: Unknown Command";
@@ -292,6 +422,9 @@ struct PendingCmd {
 };
 
 void handleCommandLoop() {
+  // Always check for incoming UART data from Reader (Monitor Mode)
+  processAsyncRfid();
+
   // Throttled heartbeat to confirm loop is running and ID matches
   if (millis() - lastHeartbeat > 10000) {
       lastHeartbeat = millis();
@@ -299,7 +432,7 @@ void handleCommandLoop() {
       if (!provisioned) status = "Not Provisioned";
       else if (WiFi.status() != WL_CONNECTED) status = "WiFi Disconnected";
       
-      Serial.println("[EC] Heartbeat: Polling Supabase for " + deviceId + " Status: " + status);
+      // Serial.println("[EC] Heartbeat: Polling Supabase for " + deviceId + " Status: " + status);
   }
 
   if (!provisioned || WiFi.status() != WL_CONNECTED) return;
@@ -323,46 +456,30 @@ void handleCommandLoop() {
   } else {
       // First boot: Do NOT execute all old pending commands.
       // We only want commands created AFTER we booted.
-      // Since we don't have a reliable clock, we can just fetch the latest one ID 
-      // and say "we start from here".
-      // Or better: Fetch the *latest* ID in the table for this device, and only accept > that.
-      // However, making another request is slow.
-      // Simpler approach: On first loop, if lastExecutedId is -1, 
-      // we fetch the latest ID and set lastExecutedId = latestId.
-      // This effectively "clears" the queue from the device's perspective on boot.
-      
-      // But wait, if we just set lastExecutedId = -1, and there are 10 pending, 
-      // it will fetch all 10.
-      
-      // Let's modify the logic: On boot (lastExecutedId == -1), 
-      // we fetch only the *very last* pending command to get its ID,
-      // and mark everything before it as "skipped" implicitly by setting lastExecutedId.
-      // Actually, easier:
-      // Just limit=1 and order=id.desc to find the latest ID.
-      // Then set lastExecutedId to that.
       
       // Implementing the "Clear Queue on Boot" logic:
       if (lastExecutedId == -1) {
           Serial.println("[EC] First Poll: Ignoring old PENDING commands...");
+          
+          // Give network stack some time to settle, especially if we just connected
+          delay(500);
+          yield();
+          
           // Strategy: Fetch the single latest command ID (whether pending or not)
           // and set lastExecutedId to it.
-          // Actually, just fetching the latest PENDING is enough? 
-          // If there are 10 pending, and we ignore them, we should just set lastExecutedId to the max ID of them.
           
           // Let's do a special query to get the max ID currently in DB for this device
           // url = ... &limit=1&order=id.desc
           
-          WiFiClientSecure clientInit;
-          clientInit.setInsecure();
-          HTTPClient httpInit;
+          // REUSE the client/http objects to avoid double allocation (which crashes ESP32)
           String initUrl = base + "/rest/v1/testuart?device_id=eq." + deviceId + "&select=id&limit=1&order=id.desc";
           
-          if (httpInit.begin(clientInit, initUrl)) {
-               httpInit.addHeader("apikey", anonKey);
-               httpInit.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
-               int code = httpInit.GET();
+          if (http.begin(client, initUrl)) {
+               http.addHeader("apikey", anonKey);
+               http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+               int code = http.GET();
                if (code == 200) {
-                   String resp = httpInit.getString();
+                   String resp = http.getString();
                    // resp is like [{"id": 123}]
                    int firstBracket = resp.indexOf(":");
                    int lastBracket = resp.indexOf("}");
@@ -372,7 +489,7 @@ void handleCommandLoop() {
                        Serial.println("[EC] Queue Cleared. Latest ID: " + String(lastExecutedId));
                    }
                }
-               httpInit.end();
+               http.end();
           }
           // If this fails, we stay at -1.
           // Return to avoid executing anything in this cycle

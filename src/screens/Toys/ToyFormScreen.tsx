@@ -33,7 +33,12 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const readOnly = !!route.params?.readOnly;
   const prefillName: string | undefined = route.params?.name;
   const [name, setName] = useState(toy?.name ?? prefillName ?? '');
-  const [rfid, setRfid] = useState(toy?.rfid || '');
+  const [rfidDisplay, setRfidDisplay] = useState(toy?.rfid ? String(toy.rfid).slice(-4).toUpperCase() : '');
+  const [rfidFull, setRfidFull] = useState<string | null>(toy?.rfid || null);
+  const [scanRunning, setScanRunning] = useState(false);
+  const scanRowIdRef = useRef<number | null>(null);
+  const lastParsedRef = useRef<string>('');
+  const [scanResults, setScanResults] = useState<Array<{ epc: string; rssi?: number; time: string }>>([]);
   const [photoUrl, setPhotoUrl] = useState<string | null>(toy?.photo_url || null);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -139,10 +144,127 @@ export default function ToyFormScreen({ route, navigation }: Props) {
 
   const scanRfid = async () => {
     try {
+      if (scanRunning) {
+        setScanRunning(false);
+        scanRowIdRef.current = null;
+        return;
+      }
+      try {
+        const { data: u } = await supabase.auth.getUser();
+        const uid = u?.user?.id;
+        if (uid) {
+          let targetId: string | null = null;
+          try {
+            const { data: dev } = await supabase
+              .from('devices')
+              .select('device_id')
+              .order('last_seen', { ascending: false })
+              .limit(1);
+            if (dev && dev.length > 0) targetId = dev[0].device_id as string;
+          } catch {}
+          if (targetId) {
+            const { data: inserted } = await supabase
+              .from('testuart')
+              .insert({ device_id: targetId, uart_debug: 'RFID_POLL_MULTI 20', uart_result: 'PENDING' })
+              .select();
+            const rowId = inserted && inserted[0]?.id ? inserted[0].id as number : null;
+            const start = Date.now();
+            let epc: string | null = null;
+            scanRowIdRef.current = rowId;
+            setScanRunning(true);
+            lastParsedRef.current = '';
+            setScanResults([]);
+            // Live loop: fetch updates for up to 15s or until stopped
+            while (scanRunning && Date.now() - start < 15000) {
+              await new Promise(r => setTimeout(r, 200));
+              let r = '';
+              let d = '';
+              if (rowId) {
+                const { data: rows } = await supabase
+                  .from('testuart')
+                  .select('id, uart_result, uart_debug')
+                  .eq('id', rowId)
+                  .limit(1);
+                const row = rows && rows[0] ? rows[0] : null;
+                r = row?.uart_result ? String(row.uart_result) : '';
+                d = row?.uart_debug ? String(row.uart_debug) : '';
+              } else {
+                const { data: rows } = await supabase
+                  .from('testuart')
+                  .select('id, uart_result, uart_debug')
+                  .eq('device_id', targetId)
+                  .order('id', { ascending: false })
+                  .limit(1);
+                const row = rows && rows[0] ? rows[0] : null;
+                r = row?.uart_result ? String(row.uart_result) : '';
+                d = row?.uart_debug ? String(row.uart_debug) : '';
+              }
+              const parseLines = (text: string) => {
+                const lines = String(text || '').split(/\r?\n/);
+                const out: Array<{ epc: string; rssi?: number }> = [];
+                for (const line of lines) {
+                  if (!line) continue;
+                  const s = line.replace(/\s+/g, ' ').trim();
+                  const m = /EPC=([0-9A-Fa-f]+)\s+RSSI=([-]?\d+)dBm/.exec(s);
+                  if (m) {
+                    out.push({ epc: m[1].toUpperCase(), rssi: parseInt(m[2], 10) });
+                  } else {
+                    const m2 = /EPC=([0-9A-Fa-f]+)/.exec(s);
+                    if (m2) out.push({ epc: m2[1].toUpperCase() });
+                  }
+                }
+                return out;
+              };
+              const combined = (r || '') + '\n' + (d || '');
+              if (combined && combined !== lastParsedRef.current) {
+                lastParsedRef.current = combined;
+                const parsed = parseLines(combined);
+                if (parsed.length > 0) {
+                    const now = new Date().toLocaleTimeString();
+                    setScanResults(prev => {
+                      const merged = [...prev];
+                      parsed.forEach(p => {
+                        merged.push({ epc: p.epc, rssi: p.rssi, time: now });
+                      });
+                      return merged.slice(-50);
+                    });
+                    // Always auto-fill if rfidFull is empty, OR update if new tag found (optional logic)
+                    // User requested: "能扫描到的标签... 填充到输入框里"
+                    // Let's autofill the FIRST found tag in this batch if rfidFull is not set yet
+                    // OR if user wants it to update to the latest scan? Usually locking to first valid is safer to avoid jumping.
+                    // But user said "没有把标签填充到输入框里", implying it didn't work.
+                    // Check logic: if (!rfidFull && parsed[0]?.epc)
+                    // If rfidFull was already set manually or by previous scan, it won't update.
+                    // Let's allow updating if it's currently empty OR if we are in active scan mode and user expects it?
+                    // Re-reading user: "能扫到最近的标签 但是没有把标签填充到输入框里"
+                    // Maybe rfidFull was initialized to empty string '' but the check !rfidFull is true.
+                    // Let's force update if the field is empty or user hasn't locked it.
+                    // Actually, let's just update it if it's currently empty.
+                    if (!rfidFull && parsed[0]?.epc) {
+                      const epc = parsed[0].epc;
+                      setRfidFull(epc);
+                      setRfidDisplay(epc.slice(-4));
+                    }
+                  }
+              }
+            }
+            setScanRunning(false);
+          }
+        }
+      } catch {}
       if (Platform.OS === 'web') {
         if ((navigator as any)?.clipboard?.readText) {
           const text = await (navigator as any).clipboard.readText();
-          if (text) setRfid(text.trim());
+          if (text) {
+            const norm = normalizeRfid(text.trim());
+            if (norm && norm.length >= 8) {
+              setRfidFull(norm);
+              setRfidDisplay(norm.slice(-4));
+            } else {
+              setRfidFull(null);
+              setRfidDisplay(norm);
+            }
+          }
           else setError('Clipboard is empty; paste or input manually');
         } else {
           setError('Browser does not support clipboard read; please input manually');
@@ -167,7 +289,10 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           try { id = (tag.id as any).map((b: number) => ('0' + b.toString(16)).slice(-2)).join(''); } catch {}
         }
         const normalized = normalizeRfid((id || '').toString());
-        if (normalized) setRfid(normalized);
+        if (normalized) {
+          setRfidFull(normalized);
+          setRfidDisplay(normalized.slice(-4));
+        }
         try { await NfcManager.cancelTechnologyRequest(); } catch {}
       } catch (err: any) {
         try {
@@ -268,14 +393,16 @@ export default function ToyFormScreen({ route, navigation }: Props) {
       return;
     }
     // Only require RFID if it's strictly needed, but let's assume it is based on existing logic
-    if (!rfid.trim()) {
+    const hasFull = !!(rfidFull && rfidFull.trim());
+    const hasDisplay = !!(rfidDisplay && rfidDisplay.trim());
+    if (!hasFull && !hasDisplay) {
       setLoading(false);
       setError('Please enter or scan RFID Tag ID');
       return;
     }
     const payload = {
       name,
-      rfid: normalizeRfid(rfid) || null,
+      rfid: normalizeRfid(hasFull ? rfidFull! : rfidDisplay) || null,
       photo_url: photoUrl || null,
       category: category || null,
       source: source || null,
@@ -505,16 +632,35 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           {/* Tag ID */}
           <TextInput
             label="Tag ID (RFID)"
-            value={rfid}
-            onChangeText={(t) => setRfid(normalizeRfid(t))}
+            value={rfidDisplay}
+            onChangeText={(t) => setRfidDisplay(normalizeRfid(t))}
             mode="outlined"
             style={[styles.input, { backgroundColor: '#FFF' }]}
             contentStyle={{ fontFamily: headerFont }}
-            right={<TextInput.Icon icon="barcode-scan" onPress={scanRfid} color="#FF8C42" />}
+            right={<TextInput.Icon icon={scanRunning ? 'stop' : 'barcode-scan'} onPress={scanRfid} color={scanRunning ? '#D32F2F' : '#FF8C42'} />}
             theme={{ roundness: 24 }}
             outlineColor="#E0E0E0"
             activeOutlineColor="#FF8C42"
           />
+          {scanRunning && (
+            <View style={{ padding: 8, backgroundColor: '#FFF', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', marginTop: 8 }}>
+              <Text style={{ fontFamily: headerFont, color: '#333', marginBottom: 6 }}>RFID 扫描中（实时）</Text>
+              <View style={{ gap: 4 }}>
+                {scanResults.length === 0 ? (
+                  <Text style={{ color: '#888' }}>等待标签...</Text>
+                ) : (
+                  scanResults.slice(-10).map((r, idx) => (
+                    <View key={idx} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <Text style={{ fontFamily: headerFont }}>{r.epc} {r.rssi !== undefined ? `(RSSI ${r.rssi} dBm)` : ''}</Text>
+                      <Button compact mode="text" onPress={() => { setRfidFull(r.epc); setRfidDisplay(r.epc.slice(-4).toUpperCase()); }}>
+                        填入后4位
+                      </Button>
+                    </View>
+                  ))
+                )}
+              </View>
+            </View>
+          )}
 
           {/* Category */}
           <Text style={[styles.sectionLabel, { fontFamily: headerFont }]}>Category</Text>

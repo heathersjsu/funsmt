@@ -22,6 +22,8 @@
 #define RFID_CMD_GET_REGION       0x08
 #define RFID_CMD_SET_QUERY        0x0E
 #define RFID_CMD_GET_QUERY        0x0D
+#define RFID_CMD_SET_DEMOD_PARAM  0xF0
+#define RFID_CMD_GET_DEMOD_PARAM  0xF1
 #define RFID_CMD_SET_CHANNEL      0xAB
 #define RFID_CMD_GET_CHANNEL      0xAA
 #define RFID_CMD_SET_FREQ_HOPPING 0xAD
@@ -44,6 +46,41 @@ public:
   // Buffer to hold generated command
   static uint8_t cmdBuf[64]; // Increased size for mask
   static int cmdLen;
+
+  // 4.x Set Demodulator Params
+  // Mixer: 0-6, IF: 0-7, Thrd: 16bit
+  static void buildSetDemodulatorParams(uint8_t mixer, uint8_t ifAmp, uint16_t threshold) {
+    cmdLen = 0;
+    cmdBuf[cmdLen++] = RFID_FRAME_HEADER;
+    cmdBuf[cmdLen++] = RFID_TYPE_COMMAND;
+    cmdBuf[cmdLen++] = RFID_CMD_SET_DEMOD_PARAM;
+    cmdBuf[cmdLen++] = 0x00;
+    cmdBuf[cmdLen++] = 0x04;
+    cmdBuf[cmdLen++] = mixer;
+    cmdBuf[cmdLen++] = ifAmp;
+    cmdBuf[cmdLen++] = (threshold >> 8) & 0xFF;
+    cmdBuf[cmdLen++] = threshold & 0xFF;
+
+    uint8_t cs = 0;
+    for (int i = 1; i < cmdLen; i++) cs += cmdBuf[i];
+    cmdBuf[cmdLen++] = cs;
+    cmdBuf[cmdLen++] = RFID_FRAME_END;
+  }
+
+  // 4.x Get Demodulator Params
+  static void buildGetDemodulatorParams() {
+    cmdLen = 0;
+    cmdBuf[cmdLen++] = RFID_FRAME_HEADER;
+    cmdBuf[cmdLen++] = RFID_TYPE_COMMAND;
+    cmdBuf[cmdLen++] = RFID_CMD_GET_DEMOD_PARAM;
+    cmdBuf[cmdLen++] = 0x00;
+    cmdBuf[cmdLen++] = 0x00;
+
+    uint8_t cs = 0;
+    for (int i = 1; i < cmdLen; i++) cs += cmdBuf[i];
+    cmdBuf[cmdLen++] = cs;
+    cmdBuf[cmdLen++] = RFID_FRAME_END;
+  }
 
   // 4.19. 设置自动跳频
   static void buildSetFreqHopping(uint8_t mode) {
@@ -104,7 +141,13 @@ public:
   // Power in dBm (e.g., 20) -> 2000 (0x07D0)
   // BB 00 B6 00 02 07 D0 8F 7E
   static void buildSetPower(uint16_t dbm) {
-    uint16_t val = dbm * 100; // 20 -> 2000
+    // If user passes 30, we want 3000. 
+    // If user passes 3000, we want 3000.
+    // Safety check: if > 100, assume it's already in 100x format
+    uint16_t val = dbm;
+    if (dbm < 100) {
+        val = dbm * 100;
+    }
     
     cmdLen = 0;
     cmdBuf[cmdLen++] = RFID_FRAME_HEADER;

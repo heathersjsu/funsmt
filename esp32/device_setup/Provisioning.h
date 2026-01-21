@@ -244,6 +244,26 @@ class WriteCallbacks : public BLECharacteristicCallbacks {
        }
        return;
     }
+
+    // Raw Hex Command support (e.g. BB 00 0D ...)
+    if (s.startsWith("BB")) {
+        String hex = s;
+        hex.replace(" ", ""); // Remove spaces
+        int len = hex.length();
+        if (len % 2 == 0) {
+            uint8_t* buf = new uint8_t[len/2];
+            for(int i=0; i<len; i+=2) {
+                 char tmp[3] = {hex[i], hex[i+1], 0};
+                 buf[i/2] = strtoul(tmp, NULL, 16);
+            }
+            sendRfidCommand(buf, len/2);
+            delete[] buf;
+            notifyMsg("UART:" + readRfidResponse());
+        } else {
+            notifyMsg("UART:Error: Odd Hex Length");
+        }
+        return;
+    }
     
     // Format: RFID_WRITE_DATA <ap_hex> <mb> <sa> <dl> <data_hex>
     if (s.startsWith("RFID_WRITE_DATA ")) {

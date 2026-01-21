@@ -8,7 +8,9 @@ import { cartoonGradient } from '../../theme/tokens';
 import { BleManager } from '../../shims/ble';
 import EnvDiagnosticsBanner from '../../components/EnvDiagnosticsBanner';
 import { getLogs, clearLogs, pushLog } from '../../utils/envDiagnostics';
-import { buildGetPowerCmd, buildSetPowerCmd, buildGetVersionCmd } from '../../utils/rfidCommands';
+import { buildGetPowerCmd, buildSetPowerCmd, buildGetVersionCmd, buildGetDemodulatorParamsCmd, buildSetDemodulatorParamsCmd, buildGetQueryCmd, buildSetQueryCmd, buildSetRegionCmd, buildSetAutoFhCmd, buildSetChannelCmd } from '../../utils/rfidCommands';
+import { normalizeRfid } from '../../utils/rfid';
+import { discoverDevices } from '../../utils/zeroconf';
 
 export default function EnvironmentCheckScreen() {
   const theme = useTheme();
@@ -38,6 +40,8 @@ export default function EnvironmentCheckScreen() {
   const [dbLoading, setDbLoading] = useState(false);
   const [deviceIp, setDeviceIp] = useState<string>('');
   const [cmdLoading, setCmdLoading] = useState(false);
+  const lastResultRef = useRef('');
+  useEffect(() => { lastResultRef.current = uartResult; }, [uartResult]);
 
   // RFID Data Access State
   const [rfidAp, setRfidAp] = useState('00000000');
@@ -47,8 +51,21 @@ export default function EnvironmentCheckScreen() {
   const [rfidWriteData, setRfidWriteData] = useState('11223344');
   
   // Initialization Process State
-  const [initFreq, setInitFreq] = useState('920.375');
   const [initRunning, setInitRunning] = useState(false);
+
+  // Frequency Control State
+  const [targetFreq, setTargetFreq] = useState('920.125');
+
+  // Demodulator Config State
+  const [mixerGain, setMixerGain] = useState('3');
+  const [ifGain, setIfGain] = useState('6');
+  const [demodThreshold, setDemodThreshold] = useState('0100');
+
+  // Gen2 Query Config State
+  const [querySession, setQuerySession] = useState('2'); // S2
+  const [queryQ, setQueryQ] = useState('4');
+  const [queryTarget, setQueryTarget] = useState('0'); // A
+  const [querySel, setQuerySel] = useState('0'); // All
 
   // Listen for Realtime updates from Supabase
   useEffect(() => {
@@ -112,6 +129,24 @@ export default function EnvironmentCheckScreen() {
       } catch {}
     };
     fetchIp();
+
+    // Pre-fetch user ID to avoid timeout during actions
+    const fetchUser = async () => {
+        try {
+            const { data } = await supabase.auth.getUser();
+            if (data?.user?.id) {
+                setSessionUserId(data.user.id);
+            } else {
+                const { data: sess } = await supabase.auth.getSession();
+                if (sess?.session?.user?.id) {
+                    setSessionUserId(sess.session.user.id);
+                }
+            }
+        } catch (e) {
+            console.log('[EnvCheck] Pre-fetch user failed:', e);
+        }
+    };
+    fetchUser();
   }, []);
 
   const sendRfidRequest = async (path: string) => {
@@ -120,13 +155,21 @@ export default function EnvironmentCheckScreen() {
     if (deviceIp) candidates.push(`http://${deviceIp}`);
     candidates.push('http://esp32.local');
     candidates.push('http://192.168.4.1');
+    try {
+      const found = await discoverDevices(2000);
+      found.forEach(d => {
+        const base = d.ip ? `http://${d.ip}` : (d.host || '');
+        if (base && !candidates.includes(base)) candidates.push(base);
+      });
+    } catch {}
 
     let success = false;
     for (const base of candidates) {
       try {
         appendStatus(`Sending ${path} to ${base}...`);
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const t = path.startsWith('/rfid_multi_poll') ? 65000 : 3000;
+        const timeoutId = setTimeout(() => controller.abort(), t);
         
         const res = await fetch(`${base}${path}`, {
           method: 'GET',
@@ -146,7 +189,7 @@ export default function EnvironmentCheckScreen() {
         // ignore
       }
     }
-    if (!success) appendStatus('Request failed on all IPs.');
+    if (!success) appendStatus('Request failed on all IPs. Check Wi-Fi connection.');
     setCmdLoading(false);
   };
 
@@ -335,24 +378,50 @@ export default function EnvironmentCheckScreen() {
   };
 
   const handleRfidAction = async (httpPath: string, bleCmd: string) => {
-    if (cmdLoading) return; // Prevent double click
     setCmdLoading(true);
       setUartResult('Sending command...');
       setUartDebug(`[${new Date().toLocaleTimeString()}] Queuing ${bleCmd}...`);
-      
       let timer: NodeJS.Timeout | null = null;
+      const safetyMs = 5000;
       try {
-      // Safety timeout (15 seconds)
       const timeoutPromise = new Promise((_, reject) => {
-         timer = setTimeout(() => reject(new Error("Request timed out (15s)")), 15000);
+         timer = setTimeout(() => reject(new Error(`Request timed out (${Math.round(safetyMs/1000)}s)`)), safetyMs);
       });
 
-      // Check Auth Session first
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      // Check Auth Session first (with timeout)
+      // Try to get user from memory/network with increased timeout and fallbacks
+      let userId: string | undefined = sessionUserId;
+      
+      if (!userId) {
+        try {
+            // 1. Try getUser() first (often more reliable for current state)
+            const getUserPromise = supabase.auth.getUser();
+            const authTimeout = new Promise((_, r) => setTimeout(() => r(new Error("Auth check timed out")), 2000)); // Reduced to 2s for faster fallback
+            
+            const { data: userData } = await Promise.race([getUserPromise, authTimeout]) as any;
+            if (userData?.user) {
+                userId = userData.user.id;
+                setSessionUserId(userId!); // Cache it
+            } else {
+                // 2. Fallback to getSession()
+                const sessionPromise = supabase.auth.getSession();
+                const { data: sessionData } = await Promise.race([sessionPromise, authTimeout]) as any;
+                if (sessionData?.session?.user) {
+                    userId = sessionData.session.user.id;
+                    setSessionUserId(userId!); // Cache it
+                }
+            }
+        } catch (e: any) {
+            console.log('[handleRfidAction] Auth check failed/timed out:', e.message);
+            // If we timed out, we might still want to proceed if we can?
+            // No, RLS will likely block us.
+            throw new Error(`Auth check failed: ${e.message}`);
+        }
+      }
+
+      if (!userId) {
          throw new Error("No active session. Please log in.");
       }
-      const userId = sessionData.session.user.id;
       appendStatus(`User ID: ${userId}`);
 
       // Determine target device ID
@@ -408,13 +477,68 @@ export default function EnvironmentCheckScreen() {
       }
       
     } catch (e: any) {
-      console.error('[handleRfidAction] Exception:', e);
-      appendStatus(`Cmd Error: ${e.message}`);
+      const msg = String(e?.message || '');
+      const isTimeout = msg.includes('timed out');
+      
+      if (isTimeout) {
+        console.log(`[handleRfidAction] Timeout (${Math.round(safetyMs/1000)}s) - Triggering Fallback`);
+      } else {
+        console.error('[handleRfidAction] Exception:', e);
+        appendStatus(`Cmd Error: ${e.message}`);
+      }
+
+      if (isTimeout) {
+        try {
+          if (connectedDevice) {
+            await sendBleCmd(bleCmd);
+            appendStatus('Fallback via BLE sent');
+          } else {
+            let fallbackPath = httpPath;
+            if (httpPath.startsWith('/rfid_poll_multi')) {
+              const m = /RFID_POLL_MULTI\s+(\d+)/i.exec(bleCmd);
+              const count = m ? m[1] : '30';
+              fallbackPath = `/rfid_multi_poll?count=${count}`;
+            }
+            await sendRfidRequest(fallbackPath);
+            appendStatus('Fallback via HTTP sent');
+          }
+        } catch {}
+      }
       setUartResult(`Error: ${e.message}`);
     } finally {
       if (timer) clearTimeout(timer);
       setCmdLoading(false);
     }
+  };
+
+  const startContinuousScan = async () => {
+    if (isContinuousScanningRef.current) return;
+    setIsContinuousScanning(true);
+    isContinuousScanningRef.current = true;
+    appendStatus('Starting Continuous Scan (ESP32 Auto Loop)...');
+
+    try {
+        // Send single start command to ESP32
+        // ESP32 will handle the loop internally and update the DB with results
+        await handleRfidAction('/rfid_start_continuous', 'RFID_START_CONTINUOUS');
+        appendStatus('Continuous Scan Command Sent. Waiting for updates...');
+    } catch (e: any) {
+        console.log('Start Continuous scan error:', e);
+        appendStatus(`Start Error: ${e.message}`);
+        setIsContinuousScanning(false);
+        isContinuousScanningRef.current = false;
+    }
+  };
+
+  const stopContinuousScan = async () => {
+      appendStatus('Stopping Continuous Scan...');
+      setIsContinuousScanning(false);
+      isContinuousScanningRef.current = false;
+      try {
+          await handleRfidAction('/rfid_stop_poll', 'RFID_POLL_STOP');
+      } catch (e) {
+          console.log('Stop command skipped/failed (likely busy):', e);
+      }
   };
 
   const toDisplayIdFromNameOrId = (name?: string, id?: string) => {
@@ -428,6 +552,138 @@ export default function EnvironmentCheckScreen() {
     // fallback: last 6 of id
     const tail = String(id || '').replace(/[^0-9A-Fa-f]/g, '').slice(-6).toUpperCase();
     return tail ? `ESP32_${tail}` : '';
+  };
+
+  const handleGetDemodParams = async () => {
+    const cmd = buildGetDemodulatorParamsCmd();
+    await handleRfidAction('/rfid_get_demod_params', cmd);
+    
+    // We need to parse the result from `lastResultRef.current` or wait for it.
+    // For simplicity, let's poll for a short time to see if we get a matching response pattern.
+    // Expected response: BB 01 F1 00 04 [Mixer] [IF] [ThrdH] [ThrdL] [CS] 7E
+    // Hex string in uartResult might look like "BB01F10004030601B0B07E" (without spaces potentially, or with spaces)
+    // The current implementation of `handleRfidAction` sets `uartResult`.
+    
+    // Let's setup a temporary watcher or just parse manually after a delay/user action.
+    // Ideally we parse it here if possible. 
+    // Since handleRfidAction is async but doesn't return the *result* (it sets state), we might need to rely on the user to see it or use the Ref trick again.
+    
+    const start = Date.now();
+    let found = false;
+    while (Date.now() - start < 3000) {
+        await new Promise(r => setTimeout(r, 200));
+        const res = lastResultRef.current.replace(/\s+/g, '').toUpperCase();
+        // Look for F1 command response
+        // BB 01 F1 ...
+        const idx = res.indexOf('BB01F1');
+        if (idx !== -1 && res.length >= idx + 22) { // 11 bytes * 2 chars = 22
+             const packet = res.substring(idx, idx + 22);
+             // Packet: BB 01 F1 00 04 [Mixer] [IF] [ThrdH] [ThrdL] [CS] 7E
+             // Indices: 01 23 45 67 89 1011 1213 1415 1617 1819 2021
+             // Mixer: 1011 -> chars 10,11
+             // IF: 1213 -> chars 12,13
+             // Thrd: 1415 1617 -> chars 14-17
+             
+             const m = parseInt(packet.substring(10, 12), 16);
+             const i = parseInt(packet.substring(12, 14), 16);
+             const t = packet.substring(14, 18);
+             
+             if (!isNaN(m)) setMixerGain(String(m));
+             if (!isNaN(i)) setIfGain(String(i));
+             if (t) setDemodThreshold(t);
+             
+             appendStatus(`Parsed Demod Params: Mixer=${m}, IF=${i}, Thrd=${t}`);
+             found = true;
+             break;
+        }
+    }
+    if (!found) appendStatus("Could not parse Demod Params from response automatically.");
+  };
+
+  const handleSetDemodParams = async () => {
+      const m = parseInt(mixerGain, 10);
+      const i = parseInt(ifGain, 10);
+      const t = parseInt(demodThreshold, 16);
+      
+      if (isNaN(m) || m < 0 || m > 6) { appendStatus("Invalid Mixer Gain (0-6)"); return; }
+      if (isNaN(i) || i < 0 || i > 7) { appendStatus("Invalid IF Gain (0-7)"); return; }
+      if (isNaN(t) || t < 0 || t > 0xFFFF) { appendStatus("Invalid Threshold (Hex 0000-FFFF)"); return; }
+      
+      const cmd = buildSetDemodulatorParamsCmd(m, i, t);
+      await handleRfidAction(`/rfid_set_demod_params?m=${m}&i=${i}&t=${t}`, cmd);
+  };
+
+  const handleGetQueryParams = async () => {
+    try {
+        const cmd = buildGetQueryCmd();
+        await handleRfidAction('/rfid_get_query', cmd);
+        
+        // Parse Logic
+        // Expected: BB 01 0D 00 02 [Byte1] [Byte2] [CS] 7E
+        const start = Date.now();
+        let found = false;
+        while (Date.now() - start < 3000) {
+            await new Promise(r => setTimeout(r, 200));
+            const res = lastResultRef.current.replace(/\s+/g, '').toUpperCase();
+            // Look for 0D command response
+            const idx = res.indexOf('BB010D');
+            if (idx !== -1 && res.length >= idx + 18) { // 9 bytes * 2 = 18
+                const packet = res.substring(idx, idx + 18);
+                // Packet: BB 01 0D 00 02 [Byte1] [Byte2] [CS] 7E
+                // Indices: 01 23 45 67 89 1011 1213 1415 1617
+                // Byte1: 1011
+                // Byte2: 1213
+                
+                const b1 = parseInt(packet.substring(10, 12), 16);
+                const b2 = parseInt(packet.substring(12, 14), 16);
+                
+                if (!isNaN(b1) && !isNaN(b2)) {
+                    // Decode Byte 1
+                    // Bit 1-0: Session
+                    const sess = b1 & 0x03;
+                    // Bit 3-2: Sel
+                    const sel = (b1 >> 2) & 0x03;
+                    
+                    // Decode Byte 2
+                    // Bit 7: Target
+                    const tgt = (b2 >> 7) & 0x01;
+                    // Bit 6-3: Q (4 bits)
+                    const q = (b2 >> 3) & 0x0F;
+                    
+                    setQuerySel(String(sel));
+                    setQueryTarget(String(tgt));
+                    setQueryQ(String(q));
+                    
+                    appendStatus(`Parsed Query: S${sess}, Q=${q}, Tgt=${tgt===0?'A':'B'}, Sel=${sel}`);
+                    found = true;
+                    break;
+                }
+            } else if (res.includes('ERROR') || res.includes('UNKNOWN')) {
+                // Detected explicit error from device
+                appendStatus('Device returned Error/Unknown Command. Firmware might not support this.');
+                found = true; // Stop spinning
+                break;
+            }
+        }
+        if (!found) appendStatus("Could not parse Query Params from response automatically.");
+    } catch (e: any) {
+        appendStatus(`Get Query Error: ${e.message}`);
+    }
+  };
+
+  const handleSetQueryParams = async () => {
+      const sess = parseInt(querySession, 10);
+      const q = parseInt(queryQ, 10);
+      const tgt = parseInt(queryTarget, 10);
+      const sel = parseInt(querySel, 10);
+      
+      if (isNaN(sess) || sess < 0 || sess > 3) { appendStatus("Invalid Session (0-3)"); return; }
+      if (isNaN(q) || q < 0 || q > 15) { appendStatus("Invalid Q (0-15)"); return; }
+      if (isNaN(tgt) || (tgt !== 0 && tgt !== 1)) { appendStatus("Invalid Target (0=A, 1=B)"); return; }
+      
+      // Defaults for others: DR=0, M=1 (M2), TRext=1
+      const cmd = buildSetQueryCmd(sess, q, tgt, 0, 1, 1, sel);
+      await handleRfidAction(`/rfid_set_query?s=${sess}&q=${q}&t=${tgt}&sel=${sel}`, cmd);
   };
 
 
@@ -980,6 +1236,13 @@ export default function EnvironmentCheckScreen() {
 
   const isWeb = Platform.OS === 'web';
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [scannedTags, setScannedTags] = useState<Set<string>>(new Set());
+  const scannedTagsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { scannedTagsRef.current = scannedTags; }, [scannedTags]);
+
+  const [isContinuousScanning, setIsContinuousScanning] = useState(false);
+  const isContinuousScanningRef = useRef(false);
+  useEffect(() => { isContinuousScanningRef.current = isContinuousScanning; }, [isContinuousScanning]);
 
   // Auto-refresh timer for DB poll (if Realtime fails or for initial sync)
   useEffect(() => {
@@ -990,44 +1253,75 @@ export default function EnvironmentCheckScreen() {
     return () => clearInterval(interval);
   }, [autoRefresh]);
 
+  // Listen for EPCs in uartResult to update scannedTags (covers both manual and auto)
+  useEffect(() => {
+    if (!uartResult) return;
+    // Match standard EPCs (24 hex chars) or longer raw hex strings
+    const matches = uartResult.match(/[0-9A-Fa-f]{24}/g) || uartResult.match(/[0-9A-Fa-f]{8,}/g);
+    
+    if (matches) {
+        setScannedTags(prev => {
+            const next = new Set(prev);
+            let changed = false;
+            matches.forEach(m => {
+                // Filter out short noise
+                if (m.length < 8) return;
+                
+                // Normalize using the utility function (handles casing, spacing, etc)
+                const norm = normalizeRfid(m);
+                
+                // Basic validation: EPC is usually 24 chars (96 bits)
+                // But we allow others if they look like valid hex tags
+                if (!next.has(norm)) {
+                    next.add(norm);
+                    changed = true;
+                }
+            });
+            return changed ? next : prev;
+        });
+    }
+  }, [uartResult]);
+
   const runInit = async () => {
     if (initRunning || cmdLoading) return;
     setInitRunning(true);
     try {
         appendStatus('--- Starting Initialization ---');
         
-        // 1. Region China (01)
-        appendStatus('1. Setting Region: China (01)...');
-        await handleRfidAction('/rfid_region_set?region=1', 'RFID_REGION_SET 1');
+        // 1. Get Firmware Version (Verify communication)
+        appendStatus('1. Get Firmware Version...');
+        await handleRfidAction('/rfid_get_version', buildGetVersionCmd());
         await new Promise(r => setTimeout(r, 2000));
 
-        // 2. Power 15dBm
-        appendStatus('2. Setting Power: 26dBm...');
-        await handleRfidAction('/rfid_set_power?dbm=26', 'RFID_POWER_SET 26');
+        // 2. Set Region: China 900MHz (01)
+        appendStatus('2. Setting Region: China 900MHz (01)...');
+        await handleRfidAction('/rfid_region_set?region=1', buildSetRegionCmd(1));
         await new Promise(r => setTimeout(r, 2000));
 
-        // 3. Channel
-        const f = parseFloat(initFreq);
-        if (isNaN(f)) throw new Error("Invalid Frequency");
-        // Formula: Index = (Freq_CH - 920.125M) / 0.25M
-        const idx = Math.round((f - 920.125) / 0.25);
-        if (idx < 0 || idx > 19) { // China 920.125-924.875MHz approx 20 channels
-           appendStatus(`Warning: Calculated Channel Index ${idx} might be out of range.`);
-        }
-        appendStatus(`3. Setting Channel: ${f}MHz (Index ${idx})...`);
-        await handleRfidAction(`/rfid_channel_set?ch=${idx}`, `RFID_CHANNEL_SET ${idx}`);
+        // 3. Set Power: 26 dBm (Balanced)
+        appendStatus('3. Setting Power: 26 dBm...');
+        await handleRfidAction('/rfid_set_power?dbm=26', buildSetPowerCmd(2600));
         await new Promise(r => setTimeout(r, 2000));
 
-        // 4. Query Params (Using Recommended Raw Hex)
-        // Default: S1, Q=4 -> 0x1104
-        const qRaw = "1104";
-        appendStatus(`4. Setting Query Params: 0x${qRaw} (S1, Q=4)...`);
-        await handleRfidAction(`/rfid_query_set_raw?val=${qRaw}`, `RFID_QUERY_SET_RAW ${qRaw}`);
+        // 4. Set Auto Frequency Hopping
+        appendStatus('4. Setting Auto Frequency Hopping...');
+        await handleRfidAction('/rfid_set_auto_fh?mode=255', buildSetAutoFhCmd(true));
         await new Promise(r => setTimeout(r, 2000));
 
-        // 5. Single Poll
-        appendStatus('5. Performing Single Poll...');
-        await handleRfidAction('/rfid_poll_single', 'RFID_POLL_SINGLE');
+        // 5. Set Demodulator Parameters: Mixer=3, IF=6, Thrd=0x0100 (Balanced)
+        appendStatus('5. Setting Demodulator: Mixer=3, IF=6, Thrd=0x0100 (Balanced)...');
+        await handleRfidAction('/rfid_set_demod', buildSetDemodulatorParamsCmd(3, 6, 0x0100));
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 6. 设置 Select 模式 (Set Mode)
+        appendStatus('6. 设置 Select 模式 (Set Mode)...');
+        await handleRfidAction('/rfid_set_select_mode?mode=1', 'RFID_SELECT_MODE 1');
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 7. 设置 Query 参数
+        appendStatus('7. 设置 Query 参数...');
+        await handleRfidAction('/rfid_set_query', buildSetQueryCmd(0, 4, 0, 0, 1, 1, 0));
+        
         
         appendStatus('--- Initialization Complete ---');
         setSnackbarMsg('Initialization Complete');
@@ -1037,6 +1331,94 @@ export default function EnvironmentCheckScreen() {
     } finally {
         setInitRunning(false);
     }
+  };
+
+  const runSmartScan = async () => {
+    if (initRunning) return;
+    setInitRunning(true);
+    
+    appendStatus('Step 6: Preparing Continuous Scan...');
+    
+    // 1. Fetch expected tags from toys table
+    let expectedTags = new Set<string>();
+    try {
+        const { data } = await supabase.from('toys').select('rfid');
+        if (data) {
+            data.forEach(t => {
+                if(t.rfid) expectedTags.add(normalizeRfid(t.rfid));
+            });
+        }
+        appendStatus(`Step 6: Expecting ${expectedTags.size} registered tags.`);
+    } catch (e: any) {
+        appendStatus(`Step 6 Warning: Could not fetch expected tags (${e.message}). Scanning blindly.`);
+    }
+
+    const startTime = Date.now();
+    const TIMEOUT = 5 * 60 * 1000; // 5 minutes
+    // Local set for logging progress only (not for logic)
+    const loggedTags = new Set<string>();
+    
+    appendStatus('Step 6: Scanning (Multi-Poll)... (Timeout: 5 mins)');
+    
+    const BATCH_SIZE = 100;
+    
+    // Clear scanned tags for new session
+    setScannedTags(new Set());
+    
+    while (Date.now() - startTime < TIMEOUT) {
+        // Async Check: Verify if all tags are found using the real-time Ref
+        const currentScanned = scannedTagsRef.current;
+        let foundCount = 0;
+        let allFound = true;
+        
+        expectedTags.forEach(tag => {
+            if (currentScanned.has(tag)) {
+                foundCount++;
+                if (!loggedTags.has(tag)) {
+                    loggedTags.add(tag);
+                    appendStatus(`[Step 6] Found Registered Tag: ${tag} (${foundCount}/${expectedTags.size})`);
+                }
+            } else {
+                allFound = false;
+            }
+        });
+
+        if (expectedTags.size > 0 && allFound) {
+             appendStatus(`Step 6 Success: All expected tags found! (${foundCount}/${expectedTags.size})`);
+             setSnackbarMsg('All tags found!');
+             setSnackbarVisible(true);
+             break;
+        }
+
+        try {
+            // Send Multi-Poll Command
+            // We use the raw hex command which SupabaseCommands.h supports via "BB ..."
+            // Or we can use the "RFID_POLL_MULTI 20" string alias if we prefer readable logs.
+            // Let's use the readable alias for clarity in logs, as SupabaseCommands.h supports it.
+            // Actually, using the raw buildMultiPollCmd is safer if we want to ensure exact hex.
+            // But SupabaseCommands.h handles "BB ..." correctly.
+            // Let's use the readable string "RFID_POLL_MULTI 20" to leverage the specific handler 
+            // and ensure count is parsed correctly.
+            
+            await handleRfidAction(`/rfid_multi_poll?count=${BATCH_SIZE}`, `RFID_POLL_MULTI ${BATCH_SIZE}`);
+            
+            await new Promise(r => setTimeout(r, 50));
+            
+            // Ensure we fetch the latest result to update scannedTags
+            await fetchDeviceDebug();
+            
+        } catch (e: any) {
+            appendStatus(`Scan Loop Error: ${e.message}`);
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+    
+    if (Date.now() - startTime >= TIMEOUT) {
+        const currentCount = [...expectedTags].filter(t => scannedTagsRef.current.has(t)).length;
+        appendStatus(`Step 6 Timeout. Found ${currentCount}/${expectedTags.size} tags.`);
+    }
+    
+    setInitRunning(false);
   };
 
   const renderLogSection = () => null; // Deprecated, using unified log card
@@ -1100,83 +1482,187 @@ export default function EnvironmentCheckScreen() {
                   Fetch Latest
                 </Button>
              </View>
+             
+             {/* Manual IP Input for Fallback */}
+             <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center' }}>
+                <TextInput
+                    mode="outlined"
+                    label="Target IP (Fallback)"
+                    value={deviceIp}
+                    onChangeText={setDeviceIp}
+                    placeholder="e.g. 192.168.1.100"
+                    style={{ flex: 1, backgroundColor: theme.colors.elevation.level1, height: 40 }}
+                    dense
+                    right={<TextInput.Icon icon="ip-network" />}
+                />
+             </View>
+             
+             {/* Swap UART Pins Button */}
+             <Button 
+                mode="contained" 
+                compact 
+                onPress={() => handleRfidAction('/rfid_info', 'RFID_SWAP_UART')} 
+                style={{ marginTop: 8, backgroundColor: theme.colors.error }}
+                icon="swap-horizontal"
+             >
+                Swap RX/TX (Fix Timeout)
+             </Button>
+          </Card.Content>
+        </Card>
+
+        {/* Scanned Tags Card */}
+        <Card style={{ borderRadius: 20, backgroundColor: theme.colors.surface, marginTop: 16 }}>
+          <Card.Title 
+            title={`Scanned Tags (${scannedTags.size})`} 
+            titleStyle={{ fontFamily: headerFont }} 
+            left={(props) => <MaterialCommunityIcons {...props} name="tag-multiple" />} 
+            right={(props) => (
+                <Button compact onPress={() => setScannedTags(new Set())}>Clear</Button>
+            )}
+          />
+          <Card.Content>
+             {scannedTags.size === 0 ? (
+                 <Text variant="bodyMedium" style={{color: theme.colors.outline, fontStyle: 'italic'}}>No tags scanned yet...</Text>
+             ) : (
+                 <View style={{ gap: 8 }}>
+                    {Array.from(scannedTags).map((tag, idx) => (
+                        <View key={tag} style={{flexDirection: 'row', alignItems: 'center', backgroundColor: theme.colors.elevation.level1, padding: 8, borderRadius: 8}}>
+                            <Text variant="labelMedium" style={{width: 30, color: theme.colors.outline}}>#{idx + 1}</Text>
+                            <Text variant="bodyMedium" style={{fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontWeight: 'bold'}}>{tag}</Text>
+                        </View>
+                    ))}
+                 </View>
+             )}
           </Card.Content>
         </Card>
 
         {/* Initialization Process Card */}
         <Card style={{ borderRadius: 20, backgroundColor: theme.colors.surface, marginTop: 16 }}>
-          <Card.Title title="Initialization Process" titleStyle={{ fontFamily: headerFont }} left={(props) => <MaterialCommunityIcons {...props} name="play-box-outline" />} />
+          <Card.Title title="初始化流程" titleStyle={{ fontFamily: headerFont }} left={(props) => <MaterialCommunityIcons {...props} name="play-box-outline" />} />
           <Card.Content>
               <View style={{ gap: 8 }}>
-                <Text variant="bodyMedium">1. Region: <Text style={{fontWeight: 'bold'}}>China (01)</Text></Text>
-                <Text variant="bodyMedium">2. Power: <Text style={{fontWeight: 'bold'}}>15 dBm</Text></Text>
+                <Text variant="bodyMedium">1. 获取固件版本（通信校验）</Text>
+                <Text variant="bodyMedium">2. 设置区域：<Text style={{fontWeight: 'bold'}}>中国 900MHz 频段（920–925MHz）</Text></Text>
+                <Text variant="bodyMedium">3. 设置功率：<Text style={{fontWeight: 'bold'}}>默认 26 dBm</Text></Text>
+                <Text variant="bodyMedium">4. 设置频点：<Text style={{fontWeight: 'bold'}}>自动跳频 (Auto Frequency Hopping)</Text></Text>
+                <Text variant="bodyMedium">5. 设置解调：<Text style={{fontWeight: 'bold'}}>Mixer=3，IF=6，Thrd=0x0100</Text></Text>
+                <Text variant="bodyMedium">6. 设置 Select 模式：<Text style={{fontWeight: 'bold'}}>Mode=1 (Set Mode)</Text></Text>
+                <Text variant="bodyMedium">7. 设置 Query 参数：<Text style={{fontWeight: 'bold'}}>DR=8，M=1，TRext=1，Sel=ALL，S=0，Q=4</Text></Text>
+
                 
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                   <Text variant="bodyMedium">3. Freq (MHz):</Text>
-                   <TextInput 
-                      mode="outlined" 
-                      value={initFreq} 
-                      onChangeText={setInitFreq} 
-                      style={{ flex: 1, backgroundColor: theme.colors.background, height: 40 }}
-                      dense
-                      keyboardType="numeric"
-                   />
-                   <Button mode="contained" compact onPress={async () => {
-                        try {
-                            const f = parseFloat(initFreq);
-                            if (isNaN(f)) { appendStatus("Invalid Freq"); return; }
-                            const idx = Math.round((f - 920.125) / 0.25);
-                            appendStatus(`Setting Channel: ${f}MHz (Index ${idx})...`);
-                            await handleRfidAction(`/rfid_channel_set?ch=${idx}`, `RFID_CHANNEL_SET ${idx}`);
-                        } catch(e:any) {
-                            appendStatus(`Error: ${e.message}`);
-                        }
-                   }}>Set</Button>
-                </View>
-                <Text variant="labelSmall" style={{ color: theme.colors.outline }}>
-                   Formula: Index = (Freq - 920.125) / 0.25
-                </Text>
-
-                <Text variant="bodyMedium">4. Query: <Text style={{fontWeight: 'bold'}}>0x1104 (S1, Q=4)</Text></Text>
-                <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8}}>
-                    <Button mode="outlined" compact onPress={() => handleRfidAction('/rfid_query_set_raw?val=1104', 'RFID_QUERY_SET_RAW 1104')}>
-                        Set S1, Q=4 (Rec)
-                    </Button>
-                    <Button mode="outlined" compact onPress={() => handleRfidAction('/rfid_query_set_raw?val=1106', 'RFID_QUERY_SET_RAW 1106')}>
-                        Set S1, Q=6
-                    </Button>
-                    <Button mode="outlined" compact onPress={() => handleRfidAction('/rfid_query_set_raw?val=1304', 'RFID_QUERY_SET_RAW 1304')}>
-                        Set S3, Q=4
-                    </Button>
-                </View>
-
-                <Text variant="bodyMedium">5. Freq Hopping: <Text style={{fontWeight: 'bold'}}>Auto</Text></Text>
-                <Button mode="outlined" compact onPress={() => handleRfidAction('/rfid_fh_set?mode=255', 'RFID_FH_SET 255')}>
-                    Enable Auto Freq Hopping
-                </Button>
-                
-                <Text variant="bodyMedium">6. Action: <Text style={{fontWeight: 'bold'}}>Single Poll (Smart)</Text></Text>
-
                 <Button 
                     mode="contained" 
-                    onPress={() => handleRfidAction('/rfid_poll_retry_smart', 'RFID_POLL_RETRY_SMART')} 
-                    loading={initRunning || cmdLoading} 
-                    icon="radar"
-                    style={{ marginTop: 8 }}
-                >
-                    Smart Poll (Retry Logic)
-                </Button>
-                
-                <Button 
-                    mode="outlined" 
                     onPress={runInit} 
                     loading={initRunning || cmdLoading} 
                     icon="play"
-                    style={{ marginTop: 8 }}
+                    style={{ marginTop: 16 }}
                 >
-                    Run Full Init Sequence
+                    运行完整初始化
+                </Button>
+
+                <View style={{ height: 1, backgroundColor: theme.colors.outlineVariant, marginVertical: 16 }} />
+                
+                <Text variant="titleSmall" style={{ color: theme.colors.primary, marginBottom: 8 }}>初始化后动作</Text>
+                
+                <Button 
+                    mode="outlined" 
+                    onPress={runSmartScan} 
+                    loading={initRunning || cmdLoading} 
+                    icon="radar"
+                >
+                    开始智能扫描（5分钟超时）
                 </Button>
               </View>
+          </Card.Content>
+        </Card>
+
+        {/* Frequency Control Card */}
+        <Card style={{ borderRadius: 20, backgroundColor: theme.colors.surface, marginTop: 16 }}>
+          <Card.Title title="Frequency Control" titleStyle={{ fontFamily: headerFont }} left={(props) => <MaterialCommunityIcons {...props} name="access-point-network" />} />
+          <Card.Content>
+             <View style={{ gap: 12 }}>
+                <View>
+                   <Text variant="titleSmall" style={{marginBottom: 8}}>Manual Frequency Set</Text>
+                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                     <TextInput
+                       mode="outlined"
+                       label="Freq (MHz)"
+                       value={targetFreq}
+                       onChangeText={setTargetFreq}
+                       keyboardType="numeric"
+                       style={{ flex: 1, backgroundColor: theme.colors.background }}
+                       dense
+                     />
+                     <Button 
+                       mode="contained" 
+                       onPress={async () => {
+                         const f = parseFloat(targetFreq);
+                         if (isNaN(f)) {
+                           setSnackbarMsg("Invalid Frequency");
+                           setSnackbarVisible(true);
+                           return;
+                         }
+                         // China 920.125-924.875MHz (Step 0.25MHz)
+                         // Index = (Freq - 920.125) / 0.25
+                         const idx = Math.round((f - 920.125) / 0.25);
+                         if (idx < 0 || idx > 19) {
+                           appendStatus(`Warning: Channel Index ${idx} out of typical range (0-19)`);
+                         }
+                         appendStatus(`Disabling Auto FH & Setting Channel: ${f}MHz (Index ${idx})...`);
+                         
+                         // 1. Disable Auto Frequency Hopping first
+                         await handleRfidAction('/rfid_set_auto_fh?enable=0', buildSetAutoFhCmd(false));
+                         
+                         // 2. Set the specific channel
+                         await handleRfidAction(`/rfid_channel_set?ch=${idx}`, buildSetChannelCmd(idx));
+                       }}
+                       loading={cmdLoading}
+                     >
+                       Set
+                     </Button>
+                   </View>
+                   <Text variant="bodySmall" style={{color: theme.colors.outline, marginTop: 4}}>
+                     Range: 920.125 - 924.875 MHz (Step 0.25)
+                   </Text>
+                </View>
+                
+                <View style={{ height: 1, backgroundColor: theme.colors.outlineVariant }} />
+                
+                <View>
+                   <Text variant="titleSmall" style={{marginBottom: 8}}>Frequency Hopping</Text>
+                   <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <Button 
+                        mode="contained" 
+                        buttonColor={theme.colors.secondary}
+                        icon="check"
+                        style={{flex: 1}}
+                        onPress={() => handleRfidAction('/rfid_set_auto_fh?enable=1', buildSetAutoFhCmd(true))}
+                        loading={cmdLoading}
+                      >
+                        Enable Auto
+                      </Button>
+                      <Button 
+                        mode="contained" 
+                        buttonColor={theme.colors.error}
+                        icon="close"
+                        style={{flex: 1}}
+                        onPress={() => handleRfidAction('/rfid_set_auto_fh?enable=0', buildSetAutoFhCmd(false))}
+                        loading={cmdLoading}
+                      >
+                        Disable
+                      </Button>
+                   </View>
+                   <Button 
+                        mode="outlined" 
+                        icon="refresh"
+                        style={{marginTop: 8}}
+                        onPress={() => handleRfidAction('/rfid_channel_get', 'RFID_CHANNEL_GET')}
+                        loading={cmdLoading}
+                      >
+                        Query Frequency (Check Log)
+                   </Button>
+                </View>
+             </View>
           </Card.Content>
         </Card>
 
@@ -1198,6 +1684,9 @@ export default function EnvironmentCheckScreen() {
                </Button>
                <Button mode="outlined" onPress={() => handleRfidAction('/rfid_set_power?dbm=20', 'RFID_POWER_SET 20')} loading={cmdLoading} compact>
                  Set 20dBm
+               </Button>
+               <Button mode="outlined" onPress={() => handleRfidAction('/rfid_set_power?dbm=26', 'RFID_POWER_SET 26')} loading={cmdLoading} compact>
+                 Set 26dBm
                </Button>
              </View>
              <Text variant="bodySmall" style={{marginTop: 8, color: theme.colors.outline}}>
@@ -1288,14 +1777,29 @@ export default function EnvironmentCheckScreen() {
           <Card.Title title="RFID Poll Test" titleStyle={{ fontFamily: headerFont }} left={(props) => <MaterialCommunityIcons {...props} name="access-point-network" />} />
           <Card.Content>
              <View style={{flexDirection: 'row', flexWrap: 'wrap', gap: 8}}>
-               <Button mode="contained" onPress={() => handleRfidAction('/rfid_single_poll', 'RFID_POLL_SINGLE')} loading={cmdLoading} compact>
+               <Button mode="contained" onPress={async () => {
+                   await handleRfidAction('/rfid_single_poll', 'RFID_POLL_SINGLE');
+                   // Auto-fetch result after short delay
+                   appendStatus('Fetching Single Poll Result...');
+                   await new Promise(r => setTimeout(r, 1000));
+                   await fetchDeviceDebug();
+               }} loading={cmdLoading} compact>
                  Single Poll
                </Button>
-               <Button mode="outlined" onPress={() => handleRfidAction('/rfid_multi_poll?count=100', 'RFID_POLL_MULTI 100')} loading={cmdLoading} compact>
-                 Multi Poll (100)
+               <Button mode="outlined" onPress={async () => {
+                   await handleRfidAction('/rfid_multi_poll?count=300', 'RFID_POLL_MULTI 300');
+                   // Multi-poll takes longer to return
+                   appendStatus('Fetching Multi Poll Result...');
+                   await new Promise(r => setTimeout(r, 3000));
+                   await fetchDeviceDebug();
+               }} loading={cmdLoading} compact>
+                 Multi Poll (300)
                </Button>
-               <Button mode="outlined" onPress={() => handleRfidAction('/rfid_stop_poll', 'RFID_POLL_STOP')} loading={cmdLoading} compact>
-                 Stop Poll
+               <Button mode="contained" onPress={startContinuousScan} loading={isContinuousScanning} disabled={isContinuousScanning} compact>
+                 Continuous Scan
+               </Button>
+               <Button mode="outlined" onPress={stopContinuousScan} loading={cmdLoading && !isContinuousScanning} compact>
+                 Stop Scan
                </Button>
              </View>
              <Text variant="bodySmall" style={{marginTop: 8, color: theme.colors.outline}}>
@@ -1359,6 +1863,118 @@ export default function EnvironmentCheckScreen() {
                <Button mode="outlined" onPress={() => handleRfidAction('/rfid_set_channel?ch=5', 'RFID_CHANNEL_SET 5')} loading={cmdLoading} compact>
                  Set CH 5
                </Button>
+             </View>
+          </Card.Content>
+        </Card>
+
+        {/* Demodulator Config Card */}
+        <Card style={{ borderRadius: 20, backgroundColor: theme.colors.surface, marginTop: 16 }}>
+          <Card.Title title="Demodulator Params (Rx)" titleStyle={{ fontFamily: headerFont }} left={(props) => <MaterialCommunityIcons {...props} name="tune" />} />
+          <Card.Content>
+             <View style={{ gap: 12 }}>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                   <TextInput
+                      mode="outlined"
+                      label="Mixer Gain (0-6)"
+                      value={mixerGain}
+                      onChangeText={setMixerGain}
+                      keyboardType="numeric"
+                      style={{ flex: 1, backgroundColor: theme.colors.background }}
+                      dense
+                   />
+                   <TextInput
+                      mode="outlined"
+                      label="IF AMP (0-7)"
+                      value={ifGain}
+                      onChangeText={setIfGain}
+                      keyboardType="numeric"
+                      style={{ flex: 1, backgroundColor: theme.colors.background }}
+                      dense
+                   />
+                </View>
+                <TextInput
+                   mode="outlined"
+                   label="Threshold (Hex 16-bit)"
+                   value={demodThreshold}
+                   onChangeText={setDemodThreshold}
+                   style={{ backgroundColor: theme.colors.background }}
+                   dense
+                />
+                <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end' }}>
+                   <Button mode="outlined" onPress={handleGetDemodParams} loading={cmdLoading}>
+                      Get Params
+                   </Button>
+                   <Button mode="contained" onPress={handleSetDemodParams} loading={cmdLoading}>
+                      Set Params
+                   </Button>
+                </View>
+                <Text variant="bodySmall" style={{color: theme.colors.outline}}>
+                   Mixer: 0=0dB ... 6=16dB{'\n'}
+                   IF AMP: 0=12dB ... 7=40dB{'\n'}
+                   Threshold: Lower = more sensitive but unstable. Rec min: 0x01B0.
+                </Text>
+             </View>
+          </Card.Content>
+        </Card>
+
+        {/* Gen2 Query Params Card */}
+        <Card style={{ borderRadius: 20, backgroundColor: theme.colors.surface, marginTop: 16 }}>
+          <Card.Title title="Gen2 Query Params (Tx)" titleStyle={{ fontFamily: headerFont }} left={(props) => <MaterialCommunityIcons {...props} name="access-point-network" />} />
+          <Card.Content>
+             <View style={{ gap: 12 }}>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                   <TextInput
+                      mode="outlined"
+                      label="Session (0-3)"
+                      value={querySession}
+                      onChangeText={setQuerySession}
+                      keyboardType="numeric"
+                      style={{ flex: 1, backgroundColor: theme.colors.background }}
+                      dense
+                   />
+                   <TextInput
+                      mode="outlined"
+                      label="Q Value (0-15)"
+                      value={queryQ}
+                      onChangeText={setQueryQ}
+                      keyboardType="numeric"
+                      style={{ flex: 1, backgroundColor: theme.colors.background }}
+                      dense
+                   />
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                   <TextInput
+                      mode="outlined"
+                      label="Target (0=A, 1=B)"
+                      value={queryTarget}
+                      onChangeText={setQueryTarget}
+                      keyboardType="numeric"
+                      style={{ flex: 1, backgroundColor: theme.colors.background }}
+                      dense
+                   />
+                   <TextInput
+                      mode="outlined"
+                      label="Select (0=All, 2=SL)"
+                      value={querySel}
+                      onChangeText={setQuerySel}
+                      keyboardType="numeric"
+                      style={{ flex: 1, backgroundColor: theme.colors.background }}
+                      dense
+                   />
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end' }}>
+                   <Button mode="outlined" onPress={handleGetQueryParams} loading={cmdLoading}>
+                      Get Query
+                   </Button>
+                   <Button mode="contained" onPress={handleSetQueryParams} loading={cmdLoading}>
+                      Set Query
+                   </Button>
+                </View>
+                <Text variant="bodySmall" style={{color: theme.colors.outline}}>
+                   Session: S0=0, S1=1, S2=2 (Rec), S3=3{'\n'}
+                   Q: 0-15 (Rec 4). Target: 0=A, 1=B.{'\n'}
+                   Defaults: DR=0, M=1 (M2), Pilot=On.
+                </Text>
              </View>
           </Card.Content>
         </Card>

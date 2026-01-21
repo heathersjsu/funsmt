@@ -10,6 +10,7 @@ extern String testGetPower();
 extern String testSetPower(int dbm);
 extern String testSinglePoll();
 extern String testMultiPoll(uint16_t count);
+extern String testAutoInit();
 extern String testStopPoll();
 extern String testGetSelectParam();
 extern String testSetSelectMode(uint8_t mode);
@@ -79,6 +80,11 @@ void setupHttp() {
     int count = 100;
     if (server.hasArg("count")) count = server.arg("count").toInt();
     String res = testMultiPoll(count);
+    server.send(200, "text/plain", res);
+  });
+
+  server.on("/rfid_auto_init", [](){
+    String res = testAutoInit();
     server.send(200, "text/plain", res);
   });
   
