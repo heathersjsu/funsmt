@@ -4,7 +4,7 @@
     "slug": "pinme",
     "version": "10.18.1",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/launcher-icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
     "splash": {
@@ -15,39 +15,37 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "用于扫描二维码以进行设备配网与配置。",
-        "NSMicrophoneUsageDescription": "用于语音指令识别以执行快捷操作。"
+        "NSCameraUsageDescription": "Used to scan QR codes for device provisioning and configuration.",
+        "NSMicrophoneUsageDescription": "Used for voice command recognition to perform quick actions."
       }
     },
     "android": {
       "package": "com.pinme.app",
       "versionCode": 101801,
       "permissions": [
-        "CAMERA",
-        "INTERNET",
-        "NFC",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
       ],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/launcher-adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGesture": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "expo-dev-client",
+      "expo-font",
       "expo-secure-store",
       [
         "expo-build-properties",
         {
           "android": {
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "buildToolsVersion": "35.0.0",
-            "kotlinVersion": "2.0.21"
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.0.0"
           }
         }
       ],
@@ -58,13 +56,18 @@
           "nfcPermission": "Allow reading NFC tags for RFID features"
         }
       ],
-      "./plugins/withAndroidManifestFix"
+      "./plugins/withAndroidManifestFix",
+      "./plugins/withAndroidExclude",
+      "react-native-ble-plx",
+      "react-native-wifi-reborn"
     ],
     "extra": {
       "eas": {
         "projectId": "bcc95b6f-9d98-434b-9b1a-39a19ceb4364"
       },
-      "displayVersion": "V10.18.01"
+      "displayVersion": "V10.18.01",
+      "SUPABASE_URL": "https://kjitkkeerytijbcgkqjj.supabase.co",
+      "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqaXRra2Vlcnl0aWpiY2drcWpqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1MzgxMjUsImV4cCI6MjA3NjExNDEyNX0.isMJIUbp7pDTxs3RBA1-paGVvQUl-TQS6t1GcwtD1Vc"
     },
     "owner": "heatherzhu"
   }

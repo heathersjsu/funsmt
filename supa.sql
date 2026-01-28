@@ -34,6 +34,20 @@ begin
   end if;
 end $$;
 
+-- 3.1) 为 reader_events 设置 REPLICA IDENTITY FULL（确保 UPDATE 事件包含完整记录）
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public' and table_name = 'reader_events'
+  ) then
+    execute 'alter table public.reader_events replica identity full';
+  else
+    raise notice 'Table public.reader_events not found; skip REPLICA IDENTITY.';
+  end if;
+end $$;
+
 -- 4) 将 play_sessions 加入 supabase_realtime publication
 do $$
 begin
@@ -73,6 +87,25 @@ begin
   end if;
 end $$;
 
+-- 4.2) 将 readers 加入 supabase_realtime publication（订阅读卡器在线状态与配置变化）
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public' and table_name = 'readers'
+  ) then
+    begin
+      execute 'alter publication supabase_realtime add table public.readers';
+    exception
+      when duplicate_object then
+        null;
+    end;
+  else
+    raise notice 'Table public.readers not found; skip publication add.';
+  end if;
+end $$;
+
 -- 5) 将 rfid_events 加入 supabase_realtime publication（若表存在）
 do $$
 begin
@@ -89,6 +122,44 @@ begin
     end;
   else
     raise notice 'Table public.rfid_events not found; skip publication add.';
+  end if;
+end $$;
+
+-- 5.1) 将 reader_events 加入 supabase_realtime publication（若表存在）
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public' and table_name = 'reader_events'
+  ) then
+    begin
+      execute 'alter publication supabase_realtime add table public.reader_events';
+    exception
+      when duplicate_object then
+        null;
+    end;
+  else
+    raise notice 'Table public.reader_events not found; skip publication add.';
+  end if;
+end $$;
+
+-- 5.2) 将 devices 加入 supabase_realtime publication（订阅设备在线/离线与心跳变化）
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.tables
+    where table_schema = 'public' and table_name = 'devices'
+  ) then
+    begin
+      execute 'alter publication supabase_realtime add table public.devices';
+    exception
+      when duplicate_object then
+        null;
+    end;
+  else
+    raise notice 'Table public.devices not found; skip publication add.';
   end if;
 end $$;
 
@@ -163,5 +234,53 @@ begin
   else
     -- 既无 user_id 又无 device_id，则无法选择上述策略
     raise notice 'rfid_events lacks user_id and device_id; no SELECT policy applied. Please add one of these columns.';
+  end if;
+end $$;
+
+-- 6.1) 为 reader_events 启用 RLS，并按设备归属读取策略（devices.user_id = auth.uid()）
+do $$
+declare
+  has_table boolean;
+  has_device_id boolean;
+begin
+  has_table := exists (
+    select 1 from information_schema.tables
+    where table_schema = 'public' and table_name = 'reader_events'
+  );
+
+  if not has_table then
+    raise notice 'Table public.reader_events not found; skip RLS configuration.';
+    return;
+  end if;
+
+  begin
+    execute 'alter table public.reader_events enable row level security';
+  exception when others then null; end;
+
+  has_device_id := exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'reader_events' and column_name = 'device_id'
+  );
+
+  if has_device_id then
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = 'reader_events' and policyname = 'reader_events_select_device_owner'
+    ) then
+      execute '
+        create policy "reader_events_select_device_owner"
+        on public.reader_events
+        for select to authenticated
+        using (
+          exists (
+            select 1 from public.devices d
+            where d.device_id = reader_events.device_id
+              and d.user_id = auth.uid()
+          )
+        )
+      ';
+    end if;
+  else
+    raise notice 'reader_events.device_id column missing; cannot apply ownership-based RLS policy.';
   end if;
 end $$;
