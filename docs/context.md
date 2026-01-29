@@ -79,3 +79,31 @@
 - **2026-01-06 11:55:00**: 验证通过，标签成功读取 (RSSI -64dBm)。
 
 <!-- Context Keeper 归档，下一节点：任意角色可安全读取 -->
+
+# [记忆快照] 2026-01-20 16:30:00 | 版本 2026.01.20 (RFID UI/UX)
+
+## 核心变更
+1. **Toy Form RFID 扫描优化**
+   - **自动填充**: 扫描成功后，自动截取 RFID 后6位填入 Tag ID 输入框。
+   - **UI 重构**: 扫描弹窗改为 `Modal` + `Portal`，样式与 WiFi 配网弹窗统一（圆角、宽度、阴影）。
+   - **交互优化**: 
+     - 启动扫描时立即清空旧数据，防止 "No tags found" 闪烁。
+     - 扫描中状态显示 "Scanning nearby tags..." 加载条（紧凑布局）。
+     - 扫描结果列表只显示 Tag ID (后6位) 和 RSSI 信号强度，移除冗余 EPC 行。
+   - **状态管理**: 增加 `scanRunningRef` 并在 async 操作后校验，防止组件卸载或手动停止后的状态竞态问题。
+
+2. **数据库权限与逻辑修复**
+   - **RLS 修复**: 修复 `testuart` 表的 RLS 策略，允许 authenticated 用户 INSERT。
+   - **指令获取逻辑**: ESP32 端改为只获取 `id > lastExecutedId` 的指令，防止无限循环执行旧指令。
+
+## 关键文件状态
+- `src/screens/Toys/ToyFormScreen.tsx`: 扫描逻辑与 UI 重构核心文件。
+- `supabase/fix_testuart_permissions.sql`: 权限修复 SQL。
+- `esp32/device_setup/SupabaseCommands.h`: 指令获取逻辑更新。
+
+## 变更日志 (Timeline)
+- **2026-01-20 14:00:00**: 用户反馈扫描结果残留问题。
+- **2026-01-20 15:30:00**: 完成 UI 统一化改造 (Modal) 与状态清洗逻辑。
+- **2026-01-20 16:20:00**: 移除 EPC 显示行，优化 Scanning 提示高度。
+
+<!-- Context Keeper 归档，下一节点：任意角色可安全读取 -->

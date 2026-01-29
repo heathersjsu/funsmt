@@ -145,13 +145,18 @@ void markAsSkipped(String id) {
       http.addHeader("apikey", anonKey);
       http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
       http.addHeader("Content-Type", "application/json");
+      // Use Prefer header to return representation, though not strictly needed for PATCH
+      http.addHeader("Prefer", "return=minimal");
       
       int code = http.PATCH("{\"uart_result\":\"Skipped (Old)\"}");
       
+      // Treat 204 (No Content) as success too
       if (code == 200 || code == 204) {
          Serial.println("[EC] Skipped OK");
       } else {
          Serial.println("[EC] Skip Err: " + String(code));
+         // If error is 404, maybe row is gone?
+         if (code == 404) Serial.println("[EC] Row not found");
       }
       http.end();
   } else {
@@ -386,10 +391,15 @@ void executeCommand(String cmdId, String cmdStr) {
     HTTPClient http;
     // PATCH /rest/v1/testuart?id=eq.cmdId
     String url = supabaseUrl + "/rest/v1/testuart?id=eq." + cmdId;
+    
+    bool patchEffective = false;
+    
     if (http.begin(client, url)) {
       http.addHeader("apikey", anonKey);
       http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
       http.addHeader("Content-Type", "application/json");
+      // Use Prefer header to return representation so we can verify if the row was actually updated
+      http.addHeader("Prefer", "return=representation");
       
       DynamicJsonDocument doc(2048);
       doc["uart_result"] = result;
@@ -400,15 +410,76 @@ void executeCommand(String cmdId, String cmdStr) {
       serializeJson(doc, payload);
       int patchCode = http.PATCH(payload);
       
-      if (patchCode == 200 || patchCode == 204) {
-         Serial.println("[EC] PATCH OK");
+      String patchResp = "";
+      if (patchCode == 200) {
+          patchResp = http.getString();
+      }
+
+      if (patchCode == 200 && patchResp != "[]") {
+         Serial.println("[EC] PATCH OK (Row Updated)");
+         patchEffective = true;
+      } else if (patchCode == 200 && patchResp == "[]") {
+         Serial.println("[EC] PATCH SILENT FAIL (RLS filtered update)");
+         patchEffective = false;
       } else {
          Serial.println("[EC] PATCH ERR: " + String(patchCode));
+         patchEffective = false;
       }
 
       http.end();
     } else {
        Serial.println("[EC] PATCH CONN ERR");
+    }
+    
+    // Fallback: Also INSERT the result as a new row to ensure App sees it (bypassing RLS update issues)
+    // Only if PATCH failed or didn't update any row (Silent Fail), OR if it's a tag result (Double Ensure)
+    if (!patchEffective || cmdStr.startsWith("RFID_POLL_MULTI") || result.indexOf("Tag:") >= 0) {
+        Serial.println("[EC] Waiting before INSERT Fallback...");
+        delay(500); // Wait for socket to free up
+        
+        Serial.println("[EC] INSERT Result Fallback...");
+        WiFiClientSecure clientIns;
+        clientIns.setInsecure();
+        HTTPClient httpIns;
+        String urlIns = supabaseUrl + "/rest/v1/testuart";
+        
+        // Retry logic for connection
+        bool connected = false;
+        for(int k=0; k<3; k++) {
+            if(httpIns.begin(clientIns, urlIns)) {
+                connected = true;
+                break;
+            }
+            delay(200);
+        }
+        
+        if (connected) {
+            httpIns.addHeader("apikey", anonKey);
+            httpIns.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+            httpIns.addHeader("Content-Type", "application/json");
+            httpIns.addHeader("Prefer", "return=representation");
+            
+            DynamicJsonDocument docIns(2048);
+            docIns["device_id"] = deviceId;
+            docIns["uart_result"] = result; // The important part
+            // Reference the original command ID in debug
+            String debugInfo = "Ref CMD:" + cmdId + "\n" + cmdStr + "\nResult: " + result;
+            docIns["uart_debug"] = debugInfo;
+            
+            String payloadIns;
+            serializeJson(docIns, payloadIns);
+            
+            int code = httpIns.POST(payloadIns);
+            if (code == 200 || code == 201) {
+                 Serial.println("[EC] INSERT Fallback OK");
+            } else {
+                 Serial.println("[EC] INSERT Fallback ERR: " + String(code));
+                 if (code == -1) Serial.println("[EC] Connection Lost during POST");
+            }
+            httpIns.end();
+        } else {
+            Serial.println("[EC] INSERT Fallback Conn Failed");
+        }
     }
   }
 }
@@ -447,13 +518,15 @@ void handleCommandLoop() {
   String base = supabaseUrl;
   if (base.endsWith("/")) base.remove(base.length() - 1);
   // Default: Get PENDING commands
-  String url = base + "/rest/v1/testuart?device_id=eq." + deviceId + "&uart_result=eq.PENDING&select=id,uart_debug&order=id.asc";
+  // Removed &order=id.asc to ensure we just get whatever is pending. 
+  // Added limit=5 to prevent fetching too many.
+  String url = base + "/rest/v1/testuart?device_id=eq." + deviceId + "&uart_result=eq.PENDING&id=gt." + String(lastExecutedId) + "&select=id,uart_debug&order=id.asc&limit=10";
   
   // CRITICAL FIX: Only fetch commands newer than what we've already processed/skipped.
   // This prevents infinite loops if the DB update (Skip) fails due to RLS.
-  if (lastExecutedId > -1) {
-      url += "&id=gt." + String(lastExecutedId);
-  } else {
+  // if (lastExecutedId > -1) {
+  //     url += "&id=gt." + String(lastExecutedId);
+  // } else {
       // First boot: Do NOT execute all old pending commands.
       // We only want commands created AFTER we booted.
       
@@ -474,12 +547,16 @@ void handleCommandLoop() {
           // REUSE the client/http objects to avoid double allocation (which crashes ESP32)
           String initUrl = base + "/rest/v1/testuart?device_id=eq." + deviceId + "&select=id&limit=1&order=id.desc";
           
-          if (http.begin(client, initUrl)) {
-               http.addHeader("apikey", anonKey);
-               http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
-               int code = http.GET();
+          WiFiClientSecure clientInit;
+          clientInit.setInsecure();
+          HTTPClient httpInit;
+          
+          if (httpInit.begin(clientInit, initUrl)) {
+               httpInit.addHeader("apikey", anonKey);
+               httpInit.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+               int code = httpInit.GET();
                if (code == 200) {
-                   String resp = http.getString();
+                   String resp = httpInit.getString();
                    // resp is like [{"id": 123}]
                    int firstBracket = resp.indexOf(":");
                    int lastBracket = resp.indexOf("}");
@@ -487,15 +564,32 @@ void handleCommandLoop() {
                        String idStr = resp.substring(firstBracket + 1, lastBracket);
                        lastExecutedId = idStr.toInt();
                        Serial.println("[EC] Queue Cleared. Latest ID: " + String(lastExecutedId));
+                   } else {
+                       // No commands found at all?
+                       // If response is [], that means no commands exist for this device.
+                       // We can safely set lastExecutedId to 0 to start fresh.
+                       if (resp == "[]") {
+                           lastExecutedId = 0;
+                           Serial.println("[EC] No history found. Initialized lastExecutedId=0");
+                       }
                    }
+               } else {
+                   Serial.println("[EC] Init GET Error: " + String(code));
                }
-               http.end();
+               httpInit.end();
+          } else {
+             Serial.println("[EC] Init Connection Failed");
           }
-          // If this fails, we stay at -1.
-          // Return to avoid executing anything in this cycle
-          return;
+          
+          // Even if we fail to get the ID, we should probably just proceed with 0 
+          // to avoid getting stuck in this loop forever if the network is flaky.
+          // Or at least back off.
+          if (lastExecutedId == -1) {
+             // Retry next loop
+             return;
+          }
       }
-  }
+  // }
   
   // Debug URL to check for malformed parameters
   // Serial.println("[EC] GET: " + url);
@@ -547,62 +641,28 @@ void handleCommandLoop() {
 
   // Now process the commands
   if (hasCommands && cmdCount > 0) {
+     Serial.println("[EC] Processing " + String(cmdCount) + " commands...");
      
-     // Special handling for backlog or first run: 
-     // If we have many commands (backlog) or it's the first run, 
-     // we might want to skip old ones and only execute the latest (or skip all on boot).
+     // SIMPLIFIED LOGIC: Just execute whatever is PENDING.
+     // The App now handles skipping old commands by setting them to 'SKIPPED_BY_APP'.
+     // We rely on the fact that once we execute and PATCH the result, it's no longer PENDING.
      
-     // Strategy: 
-      // 1. If it's the FIRST run (Boot), skip ALL commands to clear backlog.
-      // 2. If it's a normal run, execute ALL commands in sequence (Initialization sends 5 cmds).
-      
-      long maxId = -1;
-      
-      // Find max ID for updating lastExecutedId later
-      for(int i=0; i<cmdCount; i++) {
-         long cid = commandsToProcess[i].id.toInt();
-         if(cid > maxId) maxId = cid;
-      }
-      
-      if (lastExecutedId == -1) {
-          // --- BOOT / FIRST RUN: SKIP ALL ---
-          String idsToSkip = "";
-          for(int i=0; i<cmdCount; i++) {
-             if (i > 0) idsToSkip += ",";
-             idsToSkip += commandsToProcess[i].id;
-          }
-          
-          Serial.println("[EC] Boot Cleanup: Skipping IDs: " + idsToSkip);
-          WiFiClientSecure client;
-          client.setInsecure();
-          HTTPClient http;
-          String url = supabaseUrl + "/rest/v1/testuart?id=in.(" + idsToSkip + ")";
-          if (http.begin(client, url)) {
-             http.addHeader("apikey", anonKey);
-             http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
-             http.addHeader("Content-Type", "application/json");
-             http.PATCH("{\"uart_result\":\"Skipped (Boot Cleanup)\"}");
-             http.end();
-          }
-          
-          // Update lastExecutedId so we don't fetch them again
-          lastExecutedId = maxId;
-          Serial.println("[EC] Boot Synced lastExecutedId to " + String(maxId));
-          
-      } else {
-          // --- NORMAL RUN: EXECUTE ALL ---
-          for (int i = 0; i < cmdCount; i++) {
-             PendingCmd cmd = commandsToProcess[i];
-             long cmdId = cmd.id.toInt();
-             
-             // Double check it's new (should be guaranteed by GET params, but safety first)
-             if (cmdId > lastExecutedId) {
-                Serial.println("[EC] Exec ID: " + cmd.id);
-                executeCommand(cmd.id, cmd.cmd);
-                lastExecutedId = cmdId;
-             }
-          }
-      }
+     for (int i = 0; i < cmdCount; i++) {
+         PendingCmd cmd = commandsToProcess[i];
+         long cmdId = cmd.id.toInt();
+         
+         // Only execute if it's NEWER than what we last did.
+         // This prevents re-execution if the PATCH failed but we still have it in memory/queue.
+         if (cmdId > lastExecutedId) {
+             Serial.println("[EC] Executing ID: " + cmd.id);
+             executeCommand(cmd.id, cmd.cmd);
+             lastExecutedId = cmdId;
+         } else {
+             Serial.println("[EC] Skipping duplicate/old ID: " + cmd.id);
+             // CRITICAL FIX: Mark it as skipped in DB so we don't fetch it again!
+             markAsSkipped(cmd.id);
+         }
+     }
   }
 }
 

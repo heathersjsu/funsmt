@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, StyleSheet, Image, Platform, ScrollView, Pressable, KeyboardAvoidingView } from 'react-native';
-import { TextInput, Button, Text, HelperText, List, Menu, Chip, Portal, Dialog, useTheme, Avatar } from 'react-native-paper';
+import { TextInput, Button, Text, HelperText, List, Menu, Chip, Portal, Dialog, useTheme, Avatar, ActivityIndicator, Modal } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { supabase } from '../../supabaseClient';
@@ -33,11 +33,13 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const readOnly = !!route.params?.readOnly;
   const prefillName: string | undefined = route.params?.name;
   const [name, setName] = useState(toy?.name ?? prefillName ?? '');
-  const [rfidDisplay, setRfidDisplay] = useState(toy?.rfid ? String(toy.rfid).slice(-4).toUpperCase() : '');
+  const [rfidDisplay, setRfidDisplay] = useState(toy?.rfid ? formatRfidDisplay(String(toy.rfid), 6) : '');
   const [rfidFull, setRfidFull] = useState<string | null>(toy?.rfid || null);
   const [scanRunning, setScanRunning] = useState(false);
+  const scanRunningRef = useRef<boolean>(false);
   const scanRowIdRef = useRef<number | null>(null);
   const lastParsedRef = useRef<string>('');
+  const [debugText, setDebugText] = useState('');
   const [scanResults, setScanResults] = useState<Array<{ epc: string; rssi?: number; time: string }>>([]);
   const [photoUrl, setPhotoUrl] = useState<string | null>(toy?.photo_url || null);
   const [draggedFile, setDraggedFile] = useState<File | null>(null);
@@ -142,15 +144,58 @@ export default function ToyFormScreen({ route, navigation }: Props) {
     }
   };
 
+  const [scanDialogOpen, setScanDialogOpen] = useState(false);
+  
+  const stopScan = () => {
+    setScanRunning(false);
+    scanRunningRef.current = false;
+    scanRowIdRef.current = null;
+    setScanDialogOpen(false);
+  };
+
+  const parseLines = (text: string) => {
+    const lines = text.split(/\r?\n/);
+    const results: Array<{ epc: string; rssi?: number }> = [];
+    lines.forEach(line => {
+      // Match "Tag: EPC=300833B2DDD9014000000000 RSSI=-51dBm"
+      const epcMatch = line.match(/EPC\s*[:=]?\s*([0-9A-Fa-f]{4,})/i);
+      if (epcMatch) {
+        const epc = epcMatch[1];
+        let rssi: number | undefined;
+        const rssiMatch = line.match(/RSSI\s*[:=]?\s*(-?\d+)/i);
+        if (rssiMatch) {
+          rssi = parseInt(rssiMatch[1], 10);
+        }
+        results.push({ epc, rssi });
+      } else {
+        // Fallback: match raw hex strings that look like EPCs (20+ chars)
+        const hexOnly = line.trim();
+        if (/^[0-9A-Fa-f]{20,}$/.test(hexOnly)) {
+          results.push({ epc: hexOnly });
+        }
+      }
+    });
+    return results;
+  };
+
   const scanRfid = async () => {
     try {
       if (scanRunning) {
-        setScanRunning(false);
-        scanRowIdRef.current = null;
+        stopScan();
         return;
       }
+      // Initialize state immediately for UI feedback
+      setScanDialogOpen(true);
+      setScanRunning(true);
+      scanRunningRef.current = true;
+      setError(null);
+      setScanResults([]); // Clear previous results immediately
+      setDebugText(''); // Clear previous debug text
+      
       try {
         const { data: u } = await supabase.auth.getUser();
+        if (!scanRunningRef.current) return; // Abort if cancelled
+
         const uid = u?.user?.id;
         if (uid) {
           let targetId: string | null = null;
@@ -162,33 +207,86 @@ export default function ToyFormScreen({ route, navigation }: Props) {
               .limit(1);
             if (dev && dev.length > 0) targetId = dev[0].device_id as string;
           } catch {}
+          
+          if (!scanRunningRef.current) return; // Abort if cancelled
+
+          // Fallback: use latest device_id seen in testuart table (more reliable for active device)
+          try {
+            const { data: lastCmdRows } = await supabase
+              .from('testuart')
+              .select('device_id')
+              .order('id', { ascending: false })
+              .limit(1);
+            if (lastCmdRows && lastCmdRows.length > 0 && lastCmdRows[0].device_id) {
+              targetId = String(lastCmdRows[0].device_id);
+            }
+          } catch {}
+          
+          if (!scanRunningRef.current) return; // Abort if cancelled
+
           if (targetId) {
+            // Clear any previous pending commands to avoid queue backlog
+            await supabase
+              .from('testuart')
+              .update({ uart_result: 'SKIPPED_BY_APP', uart_debug: 'Skipped by new scan request' })
+              .eq('device_id', targetId)
+              .eq('uart_result', 'PENDING');
+
             const { data: inserted } = await supabase
               .from('testuart')
               .insert({ device_id: targetId, uart_debug: 'RFID_POLL_MULTI 20', uart_result: 'PENDING' })
               .select();
             const rowId = inserted && inserted[0]?.id ? inserted[0].id as number : null;
             const start = Date.now();
-            let epc: string | null = null;
             scanRowIdRef.current = rowId;
-            setScanRunning(true);
+            // setScanRunning(true) is already called at start
+            // scanRunningRef.current is already true
             lastParsedRef.current = '';
+            setDebugText(`Initializing scan on device ${targetId}...`);
             setScanResults([]);
-            // Live loop: fetch updates for up to 15s or until stopped
-            while (scanRunning && Date.now() - start < 15000) {
-              await new Promise(r => setTimeout(r, 200));
+            // Live loop: fetch updates for up to 10s or until stopped
+            const LOOP_TIMEOUT = 10000;
+            while (scanRunningRef.current && Date.now() - start < LOOP_TIMEOUT) {
+              await new Promise(r => setTimeout(r, 500)); // Slightly slower poll to reduce load
               let r = '';
               let d = '';
+              let currentDeviceId = targetId;
+              
               if (rowId) {
+                // 1. Check specific row
                 const { data: rows } = await supabase
                   .from('testuart')
-                  .select('id, uart_result, uart_debug')
+                  .select('id, uart_result, uart_debug, device_id')
                   .eq('id', rowId)
                   .limit(1);
                 const row = rows && rows[0] ? rows[0] : null;
                 r = row?.uart_result ? String(row.uart_result) : '';
                 d = row?.uart_debug ? String(row.uart_debug) : '';
+                if (row && row.device_id) currentDeviceId = row.device_id;
+
+                // 2. Check latest row (in case ESP32 updated a previous/next row)
+                const { data: latestRows } = await supabase
+                  .from('testuart')
+                  .select('id, uart_result, uart_debug')
+                  .eq('device_id', targetId)
+                  .order('id', { ascending: false })
+                  .limit(1);
+                
+                if (latestRows && latestRows.length > 0) {
+                  const latest = latestRows[0];
+                  // If latest row has data and is recent (or is the one we are looking for), combine it
+                  // We append it to 'd' (debug) so parseLines can find it
+                  if (latest.id !== rowId && (latest.uart_result !== 'PENDING' || latest.uart_debug)) {
+                     const latestStr = ` [LatestDB:${latest.id} Res:${latest.uart_result} Dbg:${latest.uart_debug}]`;
+                     d += latestStr;
+                     // Also append to r if r is pending
+                     if (r === 'PENDING' && latest.uart_result !== 'PENDING') {
+                       r += ` (See Latest: ${latest.uart_result})`;
+                     }
+                  }
+                }
               } else {
+                // Fallback (should rarely happen given rowId logic)
                 const { data: rows } = await supabase
                   .from('testuart')
                   .select('id, uart_result, uart_debug')
@@ -199,59 +297,81 @@ export default function ToyFormScreen({ route, navigation }: Props) {
                 r = row?.uart_result ? String(row.uart_result) : '';
                 d = row?.uart_debug ? String(row.uart_debug) : '';
               }
-              const parseLines = (text: string) => {
-                const lines = String(text || '').split(/\r?\n/);
-                const out: Array<{ epc: string; rssi?: number }> = [];
-                for (const line of lines) {
-                  if (!line) continue;
-                  const s = line.replace(/\s+/g, ' ').trim();
-                  const m = /EPC=([0-9A-Fa-f]+)\s+RSSI=([-]?\d+)dBm/.exec(s);
-                  if (m) {
-                    out.push({ epc: m[1].toUpperCase(), rssi: parseInt(m[2], 10) });
-                  } else {
-                    const m2 = /EPC=([0-9A-Fa-f]+)/.exec(s);
-                    if (m2) out.push({ epc: m2[1].toUpperCase() });
-                  }
+
+              // Update Debug Text with detailed info
+              const statusLine = `Dev:${currentDeviceId.slice(-4)} | Row:${rowId} | St:${r.slice(0, 10)}`;
+              const fullDebug = `${statusLine}\nRES: ${r}\nDBG: ${d}`;
+              
+              if (fullDebug !== lastParsedRef.current) {
+                lastParsedRef.current = fullDebug;
+                setDebugText(fullDebug);
+                console.log('--- RFID DEBUG ---\n' + fullDebug);
+                
+                const combined = r + '\n' + d;
+                const combinedFlat = combined.replace(/\s+/g, ' ');
+                if (/you.*only.*issue.*one.*request.*at.*a.*time/i.test(combinedFlat)) {
+                  setError('you can only issue one request at a time');
+                  stopScan();
+                  break;
                 }
-                return out;
-              };
-              const combined = (r || '') + '\n' + (d || '');
-              if (combined && combined !== lastParsedRef.current) {
-                lastParsedRef.current = combined;
                 const parsed = parseLines(combined);
+              
                 if (parsed.length > 0) {
                     const now = new Date().toLocaleTimeString();
                     setScanResults(prev => {
-                      const merged = [...prev];
+                      // Merge new results
+                      const map = new Map<string, { epc: string; rssi?: number; time: string }>();
+                      prev.forEach(p => map.set(p.epc, p));
                       parsed.forEach(p => {
-                        merged.push({ epc: p.epc, rssi: p.rssi, time: now });
+                        // Update if new or better RSSI (or just overwrite)
+                        map.set(p.epc, { epc: p.epc, rssi: p.rssi, time: now });
                       });
-                      return merged.slice(-50);
+                      const merged = Array.from(map.values());
+                      // Sort by RSSI desc
+                      merged.sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+                      // Keep top 5
+                      return merged.slice(0, 5);
                     });
-                    // Always auto-fill if rfidFull is empty, OR update if new tag found (optional logic)
-                    // User requested: "能扫描到的标签... 填充到输入框里"
-                    // Let's autofill the FIRST found tag in this batch if rfidFull is not set yet
-                    // OR if user wants it to update to the latest scan? Usually locking to first valid is safer to avoid jumping.
-                    // But user said "没有把标签填充到输入框里", implying it didn't work.
-                    // Check logic: if (!rfidFull && parsed[0]?.epc)
-                    // If rfidFull was already set manually or by previous scan, it won't update.
-                    // Let's allow updating if it's currently empty OR if we are in active scan mode and user expects it?
-                    // Re-reading user: "能扫到最近的标签 但是没有把标签填充到输入框里"
-                    // Maybe rfidFull was initialized to empty string '' but the check !rfidFull is true.
-                    // Let's force update if the field is empty or user hasn't locked it.
-                    // Actually, let's just update it if it's currently empty.
-                    if (!rfidFull && parsed[0]?.epc) {
-                      const epc = parsed[0].epc;
-                      setRfidFull(epc);
-                      setRfidDisplay(epc.slice(-4));
+
+                    // User Request: Mark executed/read commands as Skipped to prevent repetition
+                    // We try to mark both the primary row and any fallback row we might have read
+                    const idsToSkip: number[] = [];
+                    if (rowId && r !== 'Skipped') idsToSkip.push(rowId);
+                    if (latestRows && latestRows.length > 0) {
+                        const l = latestRows[0];
+                        if (l.uart_result !== 'Skipped' && l.uart_result !== 'PENDING') {
+                            idsToSkip.push(l.id);
+                        }
                     }
-                  }
+                    
+                    if (idsToSkip.length > 0) {
+                        // Fire and forget update
+                        supabase
+                            .from('testuart')
+                            .update({ uart_result: 'Skipped' })
+                            .in('id', idsToSkip)
+                            .then(({ error }) => {
+                                if (!error) console.log('Marked IDs as Skipped:', idsToSkip);
+                            });
+                    }
+                }
               }
             }
             setScanRunning(false);
+            scanRunningRef.current = false;
+            return;
           }
         }
-      } catch {}
+      } catch (e: any) {
+        setDebugText(prev => prev + '\nError: ' + e.message);
+        setScanRunning(false); // Cleanup on error
+        // If it was an ESP32 error, we might still want to try NFC?
+        // But for now, let's treat it as a stop.
+      }
+      
+      // Fallback to Web/NFC if ESP32 didn't handle it
+      // Note: If we reached here, ESP32 loop didn't run (or threw error).
+      
       if (Platform.OS === 'web') {
         if ((navigator as any)?.clipboard?.readText) {
           const text = await (navigator as any).clipboard.readText();
@@ -259,7 +379,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
             const norm = normalizeRfid(text.trim());
             if (norm && norm.length >= 8) {
               setRfidFull(norm);
-              setRfidDisplay(norm.slice(-4));
+              setRfidDisplay(formatRfidDisplay(norm, 6));
             } else {
               setRfidFull(null);
               setRfidDisplay(norm);
@@ -269,12 +389,14 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         } else {
           setError('Browser does not support clipboard read; please input manually');
         }
+        setScanRunning(false); // Cleanup
         return;
       }
       // Native platforms: use NFC when available (Dev Client / production build)
       const supportsNativeNfc = (Platform.OS as any) !== 'web' && (Constants.appOwnership !== 'expo');
       if (!supportsNativeNfc) {
         setError('Running in Expo Go; NFC scanning is unavailable. Please use Expo Dev Client or a production build.');
+        setScanRunning(false); // Cleanup
         return;
       }
       try {
@@ -291,7 +413,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
         const normalized = normalizeRfid((id || '').toString());
         if (normalized) {
           setRfidFull(normalized);
-          setRfidDisplay(normalized.slice(-4));
+          setRfidDisplay(formatRfidDisplay(normalized, 6));
         }
         try { await NfcManager.cancelTechnologyRequest(); } catch {}
       } catch (err: any) {
@@ -300,9 +422,12 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           await NfcManager.cancelTechnologyRequest();
         } catch {}
         setError(err?.message || 'NFC scan failed or device not supported');
+      } finally {
+        setScanRunning(false); // Cleanup NFC
       }
     } catch (e) {
       setError('Failed to read scan content; please input or paste manually');
+      setScanRunning(false); // Cleanup outer catch
     }
   };
 
@@ -637,30 +762,11 @@ export default function ToyFormScreen({ route, navigation }: Props) {
             mode="outlined"
             style={[styles.input, { backgroundColor: '#FFF' }]}
             contentStyle={{ fontFamily: headerFont }}
-            right={<TextInput.Icon icon={scanRunning ? 'stop' : 'barcode-scan'} onPress={scanRfid} color={scanRunning ? '#D32F2F' : '#FF8C42'} />}
+            right={<TextInput.Icon icon={scanRunning ? 'loading' : 'barcode-scan'} onPress={scanRfid} color={scanRunning ? theme.colors.primary : '#FF8C42'} />}
             theme={{ roundness: 24 }}
             outlineColor="#E0E0E0"
             activeOutlineColor="#FF8C42"
           />
-          {scanRunning && (
-            <View style={{ padding: 8, backgroundColor: '#FFF', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', marginTop: 8 }}>
-              <Text style={{ fontFamily: headerFont, color: '#333', marginBottom: 6 }}>RFID 扫描中（实时）</Text>
-              <View style={{ gap: 4 }}>
-                {scanResults.length === 0 ? (
-                  <Text style={{ color: '#888' }}>等待标签...</Text>
-                ) : (
-                  scanResults.slice(-10).map((r, idx) => (
-                    <View key={idx} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={{ fontFamily: headerFont }}>{r.epc} {r.rssi !== undefined ? `(RSSI ${r.rssi} dBm)` : ''}</Text>
-                      <Button compact mode="text" onPress={() => { setRfidFull(r.epc); setRfidDisplay(r.epc.slice(-4).toUpperCase()); }}>
-                        填入后4位
-                      </Button>
-                    </View>
-                  ))
-                )}
-              </View>
-            </View>
-          )}
 
           {/* Category */}
           <Text style={[styles.sectionLabel, { fontFamily: headerFont }]}>Category</Text>
@@ -798,6 +904,69 @@ export default function ToyFormScreen({ route, navigation }: Props) {
       </KeyboardAvoidingView>
       
       <Portal>
+        <Modal
+            visible={scanDialogOpen}
+            onDismiss={stopScan}
+            contentContainerStyle={{
+              backgroundColor: 'white',
+              borderRadius: 16,
+              width: '85%',
+              alignSelf: 'center',
+              paddingVertical: 20,
+              paddingHorizontal: 0,
+              overflow: 'hidden'
+            }}
+        >
+          {scanResults.length === 0 ? (
+              <View style={{ padding: 16, alignItems: 'center' }}>
+                 {scanRunning ? (
+                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                     <ActivityIndicator size={20} color={theme.colors.primary} style={{ marginRight: 12 }} />
+                     <Text style={{ fontFamily: headerFont, fontSize: 16, color: '#666' }}>Scanning nearby tags...</Text>
+                   </View>
+                 ) : (
+                   <Text style={{ fontFamily: headerFont, color: '#666', fontSize: 16, textAlign: 'center' }}>No tags found. Please bring toy closer.</Text>
+                 )}
+              </View>
+           ) : (
+            <ScrollView style={{ maxHeight: 400, width: '100%' }} contentContainerStyle={{ paddingHorizontal: 0 }}>
+              {scanResults.map((r, idx) => (
+                  <Pressable
+                    key={r.epc}
+                    style={({ pressed }) => ({
+                        width: '100%',
+                        paddingVertical: 14,
+                        paddingHorizontal: 32,
+                        backgroundColor: pressed ? 'rgba(0,0,0,0.05)' : 'transparent',
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                        borderBottomColor: '#eee',
+                        flexDirection: 'column',
+                        alignItems: 'stretch'
+                    })}
+                    onPress={() => {
+                      setRfidFull(r.epc);
+                      setRfidDisplay(formatRfidDisplay(r.epc, 6));
+                      stopScan();
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Text style={{ fontSize: 16, fontFamily: headerFont, color: theme.colors.onSurface }}>
+                            {formatRfidDisplay(r.epc, 6)}
+                        </Text>
+                        <Text style={{ fontSize: 12, color: r.rssi && r.rssi > -70 ? '#4CAF50' : (r.rssi && r.rssi > -85 ? '#FF9800' : '#F44336'), fontFamily: headerFont }}>
+                             {r.rssi !== undefined ? `${r.rssi} dBm` : ''}
+                        </Text>
+                    </View>
+                  </Pressable>
+                ))
+              }
+            </ScrollView>
+          )}
+          <View style={{ paddingHorizontal: 24, paddingTop: 12 }}>
+            <Button mode="text" onPress={stopScan} labelStyle={{ fontFamily: headerFont }}>Close</Button>
+          </View>
+        </Modal>
+
         <Dialog visible={addCatOpen} onDismiss={() => setAddCatOpen(false)} style={{ borderRadius: 24 }}>
           <Dialog.Content>
             <View style={{ alignItems: 'center', marginTop: -28, marginBottom: 8 }}>

@@ -57,3 +57,11 @@ build/app-release.zip
 
 # Local credentials (keep private)
 /credentials/
+
+# Temporary and junk files
+*.bak
+*.bak_resize
+1.txt
+FolderList.txt
+desktop/
+
