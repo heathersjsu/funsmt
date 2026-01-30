@@ -382,7 +382,7 @@ export default function EnvironmentCheckScreen() {
       setUartResult('Sending command...');
       setUartDebug(`[${new Date().toLocaleTimeString()}] Queuing ${bleCmd}...`);
       let timer: NodeJS.Timeout | null = null;
-      const safetyMs = 5000;
+      const safetyMs = 10000;
       try {
       const timeoutPromise = new Promise((_, reject) => {
          timer = setTimeout(() => reject(new Error(`Request timed out (${Math.round(safetyMs/1000)}s)`)), safetyMs);

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, StyleSheet, Image, Platform, ScrollView, Pressable, KeyboardAvoidingView } from 'react-native';
+import { View, StyleSheet, Image, Platform, ScrollView, Pressable, KeyboardAvoidingView, Alert } from 'react-native';
 import { TextInput, Button, Text, HelperText, List, Menu, Chip, Portal, Dialog, useTheme, Avatar, ActivityIndicator, Modal } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -8,7 +8,7 @@ import { Toy } from '../../types';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { uploadToyPhotoBestEffort, uploadToyPhotoWebBestEffort, uploadBase64PhotoBestEffort, BUCKET } from '../../utils/storage';
-import { setToyStatus, recordScan } from '../../utils/playSessions';
+// import { setToyStatus, recordScan } from '../../utils/playSessions';
 import { normalizeRfid, formatRfidDisplay } from '../../utils/rfid';
 import Constants from 'expo-constants';
 import { LinearGradient } from 'expo-linear-gradient'
@@ -35,6 +35,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const [name, setName] = useState(toy?.name ?? prefillName ?? '');
   const [rfidDisplay, setRfidDisplay] = useState(toy?.rfid ? formatRfidDisplay(String(toy.rfid), 6) : '');
   const [rfidFull, setRfidFull] = useState<string | null>(toy?.rfid || null);
+  const [scannedDeviceId, setScannedDeviceId] = useState<string | null>(null);
   const [scanRunning, setScanRunning] = useState(false);
   const scanRunningRef = useRef<boolean>(false);
   const scanRowIdRef = useRef<number | null>(null);
@@ -48,7 +49,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   const [source, setSource] = useState(toy?.source || '');
   const [location, setLocation] = useState(toy?.location || '');
   const [owner, setOwner] = useState(toy?.owner || '');
-  const [status, setStatus] = useState<Toy['status']>(toy?.status || 'in');
+  // const [status, setStatus] = useState<Toy['status']>(toy?.status || 'in');
   const [notes, setNotes] = useState(toy?.notes || '');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -225,6 +226,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           if (!scanRunningRef.current) return; // Abort if cancelled
 
           if (targetId) {
+            setScannedDeviceId(targetId);
             // Clear any previous pending commands to avoid queue backlog
             await supabase
               .from('testuart')
@@ -533,7 +535,8 @@ export default function ToyFormScreen({ route, navigation }: Props) {
       source: source || null,
       location: location || null,
       owner: owner || null,
-      status,
+      device_id: scannedDeviceId || toy?.device_id || null,
+      // status,
       notes: notes || null,
     };
     if (toy) {
@@ -657,9 +660,9 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           setError(error.message);
         } else {
           // If status changed, record a scan event to ensure play history continuity
-          if (toy.status !== status) {
-            try { await recordScan(toy.id, new Date().toISOString()); } catch {}
-          }
+          // if (toy.status !== status) {
+          //   try { await recordScan(toy.id, new Date().toISOString()); } catch {}
+          // }
           navigation.goBack();
         }
       } catch (e: any) {
@@ -694,7 +697,7 @@ export default function ToyFormScreen({ route, navigation }: Props) {
           const publicUrl = await uploadToyPhotoWebBestEffort(blob, uid);
           payload.photo_url = publicUrl;
         }
-        const { error } = await supabase.from('toys').insert({ ...payload, user_id: uid });
+        const { error } = await supabase.from('toys').insert({ ...payload, user_id: uid, status: 'in' });
         setLoading(false);
         if (error) setError(error.message); else navigation.goBack();
       } catch (e: any) {
@@ -705,6 +708,44 @@ export default function ToyFormScreen({ route, navigation }: Props) {
   };
 
   // removed inline history rendering; use dedicated history screen instead
+
+  const deleteToy = async () => {
+    if (!toy) return;
+    if (Platform.OS === 'web') {
+      if (confirm('Are you sure you want to delete this toy?')) {
+        setLoading(true);
+        const { error } = await supabase.from('toys').delete().eq('id', toy.id);
+        setLoading(false);
+        if (error) {
+          setError(error.message);
+        } else {
+          navigation.goBack();
+        }
+      }
+    } else {
+      Alert.alert(
+        'Delete Toy',
+        'Are you sure you want to delete this toy?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Delete', 
+            style: 'destructive',
+            onPress: async () => {
+               setLoading(true);
+               const { error } = await supabase.from('toys').delete().eq('id', toy.id);
+               setLoading(false);
+               if (error) {
+                 setError(error.message);
+               } else {
+                 navigation.goBack();
+               }
+            }
+          }
+        ]
+      );
+    }
+  };
 
   const isWeb = Platform.OS === 'web';
 
@@ -767,6 +808,11 @@ export default function ToyFormScreen({ route, navigation }: Props) {
             outlineColor="#E0E0E0"
             activeOutlineColor="#FF8C42"
           />
+          {(scannedDeviceId || toy?.device_id) && (
+            <HelperText type="info" visible={true} style={{ fontFamily: headerFont }}>
+              Bound Device: {scannedDeviceId || toy?.device_id}
+            </HelperText>
+          )}
 
           {/* Category */}
           <Text style={[styles.sectionLabel, { fontFamily: headerFont }]}>Category</Text>
@@ -836,65 +882,34 @@ export default function ToyFormScreen({ route, navigation }: Props) {
 
           {error && <Text style={{ color: theme.colors.error, marginTop: 8, fontFamily: headerFont }}>{error}</Text>}
 
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, justifyContent: 'center' }}>
-            <Button
-              mode={status === 'in' ? 'contained' : 'outlined'}
-              onPress={async () => {
-                setStatus('in');
-                if (toy?.id) {
-                  try {
-                    setLoading(true);
-                    const { error } = await supabase.from('toys').update({ status: 'in' }).eq('id', toy.id);
-                    if (!error) {
-                      try {
-                        await supabase.from('play_sessions').insert({ toy_id: toy.id, scan_time: new Date().toISOString() });
-                      } catch {}
-                    }
-                    setLoading(false);
-                    if (error) setError(error.message);
-                  } catch (e: any) {
-                    setLoading(false);
-                    setError(e?.message || 'Failed to update status');
-                  }
-                }
-              }}
-              style={{ borderRadius: 20, minWidth: 140 }}
-              labelStyle={{ fontFamily: headerFont }}
-            >
-              Set In Place
-            </Button>
-            <Button
-              mode={status === 'out' ? 'contained' : 'outlined'}
-              onPress={async () => {
-                setStatus('out');
-                if (toy?.id) {
-                  try {
-                    setLoading(true);
-                    const { error } = await supabase.from('toys').update({ status: 'out' }).eq('id', toy.id);
-                    if (!error) {
-                      try {
-                        await supabase.from('play_sessions').insert({ toy_id: toy.id, scan_time: new Date().toISOString() });
-                      } catch {}
-                    }
-                    setLoading(false);
-                    if (error) setError(error.message);
-                  } catch (e: any) {
-                    setLoading(false);
-                    setError(e?.message || 'Failed to update status');
-                  }
-                }
-              }}
-              style={{ borderRadius: 20, minWidth: 140 }}
-              labelStyle={{ fontFamily: headerFont }}
-            >
-              Set as Playing
-            </Button>
-          </View>
+
 
           <View style={{ height: 12 }} />
-          <Button mode="contained" onPress={save} loading={loading} style={[styles.saveBtn, { alignSelf: 'center' }]} contentStyle={{ height: 44, minWidth: 120 }} labelStyle={{ fontSize: 16, fontWeight: 'bold', fontFamily: headerFont }}>
-            Save
-          </Button>
+          <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16 }}>
+            {toy && (
+              <Button 
+                mode="outlined" 
+                onPress={deleteToy} 
+                loading={loading}
+                style={[styles.saveBtn, { borderColor: theme.colors.error, flex: 1, maxWidth: 160 }]} 
+                contentStyle={{ height: 44 }} 
+                textColor={theme.colors.error}
+                labelStyle={{ fontSize: 16, fontWeight: 'bold', fontFamily: headerFont }}
+              >
+                Delete
+              </Button>
+            )}
+            <Button 
+              mode="contained" 
+              onPress={save} 
+              loading={loading} 
+              style={[styles.saveBtn, { flex: 1, maxWidth: 160 }]} 
+              contentStyle={{ height: 44 }} 
+              labelStyle={{ fontSize: 16, fontWeight: 'bold', fontFamily: headerFont }}
+            >
+              Save
+            </Button>
+          </View>
 
           
           

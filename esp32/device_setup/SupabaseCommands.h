@@ -308,8 +308,8 @@ void executeCommand(String cmdId, String cmdStr) {
     Serial.println("[EC] Exec: RFID_FH_SET " + String(mode));
     result = testSetFreqHopping(mode);
   } else if (cmdStr == "RFID_SWAP_UART") {
-    Serial.println("[EC] Exec: RFID_SWAP_UART");
-    result = swapUartPins();
+    Serial.println("[EC] Exec: RFID_SWAP_UART (Deprecated)");
+    result = "Error: Deprecated";
   } else if (cmdStr.startsWith("RFID_CHANNEL_SET ")) {
     int ch = cmdStr.substring(17).toInt();
     Serial.println("[EC] Exec: RFID_CHANNEL_SET " + String(ch));
@@ -469,7 +469,14 @@ void executeCommand(String cmdId, String cmdStr) {
             String payloadIns;
             serializeJson(docIns, payloadIns);
             
-            int code = httpIns.POST(payloadIns);
+            int code = -1;
+            for(int k=0; k<3; k++) {
+                 code = httpIns.POST(payloadIns);
+                 if (code == 200 || code == 201) break;
+                 Serial.println("[EC] POST Fail: " + String(code) + ", Retrying (" + String(k+1) + "/3)...");
+                 delay(500);
+            }
+            
             if (code == 200 || code == 201) {
                  Serial.println("[EC] INSERT Fallback OK");
             } else {
@@ -481,6 +488,173 @@ void executeCommand(String cmdId, String cmdStr) {
             Serial.println("[EC] INSERT Fallback Conn Failed");
         }
     }
+  }
+}
+
+bool updateToyStatus(String epc, String status) {
+  if (epc.length() == 0) return false;
+  
+  Serial.println("[EC] Updating Toy Status: " + epc + " -> " + status);
+  
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  
+  bool success = false;
+
+  // Normalize EPC (remove spaces and convert to uppercase)
+  String normEpc = epc;
+  normEpc.replace(" ", "");
+  normEpc.toUpperCase();
+  
+  // PATCH /rest/v1/toys?rfid=eq.EPC (Try case-insensitive if possible, but eq is exact)
+  // Let's try to match by lower case if needed, or rely on normalization.
+  // Actually, Supabase has an "ilike" operator for case-insensitive match, but "eq" is safer if we know format.
+  // We will enforce uppercase here, assuming DB stores uppercase. 
+  // If silent fail persists, we might need "ilike" or try both.
+  
+  String url = supabaseUrl + "/rest/v1/toys?rfid=eq." + normEpc;
+  
+  if (http.begin(client, url)) {
+      http.addHeader("apikey", anonKey);
+      http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("Prefer", "return=representation");
+      
+      DynamicJsonDocument doc(256);
+      doc["status"] = status;
+      // Update updated_at? Supabase usually handles this if configured.
+      
+      String payload;
+      serializeJson(doc, payload);
+      
+      int code = http.PATCH(payload);
+      String resp = http.getString();
+      
+      if (code == 200 || code == 204) {
+          if (resp == "[]") {
+             Serial.println("[EC] Toy Update SILENT FAIL: No rows updated. Trying ilike...");
+             // Retry with ilike (case-insensitive)
+             http.end(); // End previous
+             
+             String urlIlike = supabaseUrl + "/rest/v1/toys?rfid=ilike." + normEpc;
+             if (http.begin(client, urlIlike)) {
+                 http.addHeader("apikey", anonKey);
+                 http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+                 http.addHeader("Content-Type", "application/json");
+                 http.addHeader("Prefer", "return=representation");
+                 int code2 = http.PATCH(payload);
+                 String resp2 = http.getString();
+                 if (code2 == 200 && resp2 != "[]") {
+                      Serial.println("[EC] Toy Status Updated OK (via ilike)");
+                      success = true;
+                 } else {
+                      Serial.println("[EC] Toy Update Retry Fail: " + String(code2) + " " + resp2);
+                 }
+                 http.end();
+             }
+          } else {
+             Serial.println("[EC] Toy Status Updated OK");
+             success = true;
+          }
+      } else {
+          Serial.println("[EC] Toy Update Err: " + String(code) + " " + resp);
+      }
+      http.end();
+  } else {
+      Serial.println("[EC] Toy Update Conn Err");
+  }
+  return success;
+}
+
+// Function to sync assigned tags from Supabase on startup
+// Returns a list of EPCs (comma separated)
+String syncAssignedTags() {
+    Serial.println("[EC] Syncing Assigned Tags for Device: " + deviceId);
+    
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    
+    // GET /rest/v1/toys?device_id=eq.DEVICE_ID&select=rfid
+    String url = supabaseUrl + "/rest/v1/toys?device_id=eq." + deviceId + "&select=rfid";
+    
+    if (http.begin(client, url)) {
+        http.addHeader("apikey", anonKey);
+        http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+        
+        int code = http.GET();
+        String resp = http.getString();
+        
+        if (code == 200) {
+            Serial.println("[EC] Sync Tags Response: " + resp);
+            // Parse JSON Array: [{"rfid":"..."}, {"rfid":"..."}]
+            // Simple parsing to avoid large JSON buffer if list is long
+            // Just extract "rfid":"VALUE"
+            String epcList = "";
+            int idx = 0;
+            while (true) {
+                idx = resp.indexOf("\"rfid\":\"", idx);
+                if (idx == -1) break;
+                int start = idx + 8; // "rfid":" length
+                int end = resp.indexOf("\"", start);
+                if (end == -1) break;
+                
+                String epc = resp.substring(start, end);
+                if (epcList.length() > 0) epcList += ",";
+                epcList += epc;
+                idx = end;
+            }
+            Serial.println("[EC] Parsed EPC List: " + epcList);
+            return epcList;
+        } else {
+            Serial.println("[EC] Sync Tags Err: " + String(code) + " " + resp);
+        }
+        http.end();
+    } else {
+        Serial.println("[EC] Sync Tags Conn Err");
+    }
+    return "";
+}
+
+void recordPlaySession(String epc, time_t startTs, time_t endTs) {
+  if (epc.length() == 0 || startTs == 0 || endTs == 0) return;
+  
+  long duration = endTs - startTs;
+  Serial.println("[EC] Recording Play Session: " + epc + " Duration: " + String(duration) + "s");
+  
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  
+  // POST /rest/v1/play_sessions
+  String url = supabaseUrl + "/rest/v1/play_sessions";
+  
+  if (http.begin(client, url)) {
+      http.addHeader("apikey", anonKey);
+      http.addHeader("Authorization", "Bearer " + (deviceJwt.length() > 0 ? deviceJwt : anonKey));
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("Prefer", "return=representation");
+      
+      DynamicJsonDocument doc(256);
+      doc["rfid"] = epc;
+      doc["start_time"] = startTs; // Unix timestamp
+      doc["end_time"] = endTs;
+      doc["duration"] = duration;
+      
+      String payload;
+      serializeJson(doc, payload);
+      
+      int code = http.POST(payload);
+      
+      if (code == 201 || code == 200 || code == 204) {
+          Serial.println("[EC] Play Session Recorded OK");
+      } else {
+          Serial.println("[EC] Session Record Err: " + String(code));
+      }
+      http.end();
+  } else {
+      Serial.println("[EC] Session Record Conn Err");
   }
 }
 

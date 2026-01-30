@@ -5,6 +5,10 @@
 #include "Provisioning.h"
 #include "SupabaseHeartbeat.h"
 #include "SupabaseCommands.h"
+#include "TagMonitor.h"
+
+unsigned long lastAutoScan = 0;
+bool initialTagsSynced = false;
 
 void setup() {
   Serial.begin(115200);
@@ -41,6 +45,20 @@ void loop() {
   handleCommandLoop();
   handleContinuousLoop(); // Process continuous scanning if active
   handlePeripheralLoop();
+  
+  // Initial Sync of Assigned Tags (Run once when WiFi connects)
+  if (provisioned && WiFi.status() == WL_CONNECTED && !initialTagsSynced) {
+      Serial.println("[main] WiFi Connected, syncing tags...");
+      String assignedEpcs = syncAssignedTags();
+      initAssignedTags(assignedEpcs);
+      initialTagsSynced = true;
+  }
+  
+  // Periodic RFID Scan (Requirements 2.1 & 2.2)
+  if (provisioned && WiFi.status() == WL_CONNECTED && millis() - lastAutoScan > RFID_SCAN_INTERVAL_MS) {
+      lastAutoScan = millis();
+      runScanCycle();
+  }
   
   delay(10);
 }

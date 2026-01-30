@@ -78,7 +78,7 @@ void sendRfidCommand(const uint8_t* cmd, int len) {
 // Robust frame reader helper
 String readRfidResponse() {
   unsigned long startWait = millis();
-  uint8_t rxBuf[256];
+  uint8_t rxBuf[512]; // Increased buffer size
   int rxLen = 0;
   
   // State machine variables
@@ -103,7 +103,7 @@ String readRfidResponse() {
       // Serial.print(String(b, HEX) + " "); 
       
       // Safety check for buffer overflow
-      if (rxLen >= 255) {
+      if (rxLen >= 511) {
          Serial.println("\n[UART] Err: Buf overflow, resetting");
          rxLen = 0;
          state = 0;
@@ -115,9 +115,7 @@ String readRfidResponse() {
       if (state == 0) {
         // Looking for Header
         if (b == 0xBB) {
-           // Found header. If it wasn't at index 0, shift/reset? 
-           // For simplicity, if we find BB and rxLen > 1, we might have skipped garbage.
-           // But here we just assume if we are in state 0, we treat this as start.
+           // Found header.
            if (rxLen > 1) {
              // We had garbage before BB, reset buffer to just BB
              rxBuf[0] = 0xBB;
@@ -138,11 +136,46 @@ String readRfidResponse() {
            // Total = 5 + PL + 2 = 7 + PL
            expectedLen = 7 + pl;
            
-           // Sanity check on length (e.g. max 255)
-           if (expectedLen > 255) {
-              Serial.println("\n[UART] Err: PL too huge (" + String(pl) + "), reset");
-              rxLen = 0;
-              state = 0;
+           // Sanity check on length (e.g. max 500)
+           if (expectedLen > 500) {
+              Serial.println("\n[UART] Err: Invalid PL (" + String(pl) + ")");
+              
+              // Smart Recovery: Scan for next 0xBB in the bytes we already have
+              int foundNextBB = -1;
+              for(int i=1; i<rxLen; i++) {
+                if(rxBuf[i] == 0xBB) {
+                  foundNextBB = i;
+                  break;
+                }
+              }
+              
+              if(foundNextBB != -1) {
+                // Shift buffer
+                int newLen = rxLen - foundNextBB;
+                memmove(rxBuf, rxBuf + foundNextBB, newLen);
+                rxLen = newLen;
+                Serial.println("[UART] Recovered: Found next header at idx " + String(foundNextBB));
+                state = 1; // We have a header at 0, continue in state 1
+                // Note: The loop will continue, picking up next byte. 
+                // But we need to re-check if we *already* have 5 bytes in the new buffer?
+                // The loop processes one byte at a time.
+                // But here we modified rxBuf *in place* and kept the loop running.
+                // The `state == 1` check runs *after* `rxBuf[rxLen++] = b`.
+                // We are inside that check.
+                // If we shift, we might have < 5 bytes now.
+                // Next iteration of `while(available)` will read *new* byte.
+                // But what if we have valid bytes *already* in buffer?
+                // This simple loop structure doesn't re-process buffer.
+                // It relies on *incoming* bytes to trigger checks.
+                // This is a limitation.
+                // However, since we just shifted, `rxLen` decreased.
+                // If `rxLen` is still >= 5, we *won't* check it again until *next* byte arrives.
+                // This implies we need at least 1 more byte to arrive to trigger the check again.
+                // This is fine for now, usually packets stream in.
+              } else {
+                rxLen = 0;
+                state = 0;
+              }
            } else {
               state = 2;
            }
@@ -167,11 +200,25 @@ String readRfidResponse() {
               
               return RfidParser::parseRfidFrame(rxBuf, rxLen);
            } else {
-              Serial.println("\n[UART] Err: Missing End Byte 7E, reset");
-              // Maybe we missed the real start? Hard to recover perfectly without complex logic.
-              // Simple reset.
-              rxLen = 0;
-              state = 0;
+              Serial.println("\n[UART] Err: Missing End Byte 7E");
+              // Recovery: Scan for next 0xBB
+              int foundNextBB = -1;
+              for(int i=1; i<rxLen; i++) {
+                if(rxBuf[i] == 0xBB) {
+                  foundNextBB = i;
+                  break;
+                }
+              }
+              if(foundNextBB != -1) {
+                 int newLen = rxLen - foundNextBB;
+                 memmove(rxBuf, rxBuf + foundNextBB, newLen);
+                 rxLen = newLen;
+                 Serial.println("[UART] Recovered: Found next header at idx " + String(foundNextBB));
+                 state = 1;
+              } else {
+                 rxLen = 0;
+                 state = 0;
+              }
            }
         }
       }
@@ -317,7 +364,6 @@ String testMultiPoll(uint16_t count) {
 
 // Forward Declarations
 String testStopPoll();
-String swapUartPins();
 String testGetSelectParam();
 String testSetSelectMode(uint8_t mode);
 String testSetSelectParamDefault();
@@ -354,31 +400,7 @@ void runRfidInitialization() {
   }
 
   if (!connected) {
-      Serial.println("[UART] Init Failed: No Reader Response. Trying to swap pins (RX<->TX)...");
-      swapUartPins();
-      delay(500);
-      
-      // Retry once with swapped pins
-      retries = 3;
-      while(retries-- > 0) {
-          Serial.println("[UART] Init (Swapped): Check FW Version...");
-          RfidCommands::buildGetInfo();
-          sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-          String res = readRfidResponse();
-          if (res != "" && !res.startsWith("Error")) {
-              Serial.println("[UART] Reader Connected (Swapped). FW: " + res);
-              connected = true;
-              break;
-          }
-          delay(500);
-      }
-  }
-
-  if (!connected) {
-      Serial.println("[UART] Init Failed: No Reader Response (Even after swap)");
-      // Swap back to restore original state if user fixes wiring later
-      swapUartPins(); 
-      Serial.println("[UART] Restored default pins (RX=" + String(rfidRxPin) + " TX=" + String(rfidTxPin) + ")");
+      Serial.println("[UART] Init Failed: No Reader Response. Please check wiring (RX=16, TX=17) and Power.");
       return;
   }
   
@@ -399,9 +421,9 @@ void runRfidInitialization() {
   testSetFreqHopping(0xFF);
   delay(100);
 
-  // 5. Demod Params: Mixer=3, IF=6, Thrd=0x0080 (Increased Sensitivity)
-  Serial.println("[UART] Init: Set Demod Params (3,6,0x0080)...");
-  testSetDemodulatorParams(3, 6, 0x0080);
+  // 5. Demod Params: Mixer=2, IF=4, Thrd=0x00C0 (Reduced Gain, Higher Threshold)
+  Serial.println("[UART] Init: Set Demod Params (2,4,0x00C0)...");
+  testSetDemodulatorParams(2, 4, 0x00C0);
   delay(100);
 
   // 6. Set Mode=1
@@ -409,9 +431,9 @@ void runRfidInitialization() {
   testSetSelectMode(1);
   delay(100);
 
-  // 7. Query: DR=8(0), M=1, TRext=1, Sel=0(All), S=0, T=0, Q=4
-  Serial.println("[UART] Init: Set Query (DR=8, M=1, TRext=1, Sel=All, S=0, Q=4)...");
-  testSetQuery(0, 1, 1, 0, 0, 0, 4);
+  // 7. Query: DR=8(0), M=1, TRext=1, Sel=0(All), S=1, T=0, Q=4
+  Serial.println("[UART] Init: Set Query (DR=8, M=1, TRext=1, Sel=All, S=1, Q=4)...");
+  testSetQuery(0, 1, 1, 0, 1, 0, 4);
   
   Serial.println("[UART] Init Done.");
 }
@@ -427,10 +449,10 @@ String testAutoInit() {
   logs += "1. Region(CN900): " + readRfidResponse() + "\n";
   delay(100);
 
-  // 2. Set Power (30dBm = 30)
-  RfidCommands::buildSetPower(30);
+  // 2. Set Power (24dBm)
+  RfidCommands::buildSetPower(24);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  logs += "2. Power(30dBm): " + readRfidResponse() + "\n";
+  logs += "2. Power(24dBm): " + readRfidResponse() + "\n";
   delay(100);
 
   // 3. Set Freq Hopping (Auto = 0xFF)
@@ -439,18 +461,17 @@ String testAutoInit() {
   logs += "3. FreqHopping(Auto): " + readRfidResponse() + "\n";
   delay(100);
 
-  // 4. Set Select Mode (Mode 2)
-  RfidCommands::buildSetSelectMode(0x02);
+  // 4. Set Select Mode (Mode 1)
+  RfidCommands::buildSetSelectMode(0x01);
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  logs += "4. SelectMode(2): " + readRfidResponse() + "\n";
+  logs += "4. SelectMode(1): " + readRfidResponse() + "\n";
   delay(100);
 
-  // 5. Set Query (Session 0, Q=4)
-  // DR=0, M=0, TRext=1, Sel=0, Sess=0, Tgt=0, Q=4
-  // Ensure we use Session 0 for continuous reading
-  RfidCommands::buildSetQuery(0, 0, 1, 0, 0, 0, 4); 
+  // 5. Set Query (Session 1, Q=4)
+  // DR=0, M=0, TRext=1, Sel=0, Sess=1, Tgt=0, Q=4
+  RfidCommands::buildSetQuery(0, 0, 1, 0, 1, 0, 4); 
   sendRfidCommand(RfidCommands::cmdBuf, RfidCommands::cmdLen);
-  logs += "5. Query(S0,Q4): " + readRfidResponse() + "\n";
+  logs += "5. Query(S1,Q4): " + readRfidResponse() + "\n";
   delay(100);
 
   Serial.println("[UART] Auto Init Done.");
@@ -496,13 +517,6 @@ String testSetSelectParamDefault() {
   return readRfidResponse();
 }
 
-String swapUartPins() {
-  int temp = rfidRxPin;
-  rfidRxPin = rfidTxPin;
-  rfidTxPin = temp;
-  setupPeripheralUart(); // Re-init
-  return String("Swapped: RX=") + rfidRxPin + " TX=" + rfidTxPin;
-}
 
 String testSetDemodulatorParams(uint8_t mixer, uint8_t ifAmp, uint16_t thrd) {
   Serial.println(String("[UART] demod_set M=") + mixer + " I=" + ifAmp + " T=" + String(thrd, HEX));

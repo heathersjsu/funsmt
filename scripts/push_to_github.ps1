@@ -42,8 +42,11 @@ if ($UserEmail -and $UserEmail.Trim().Length -gt 0) { Exec "git config user.emai
 Exec "git add ."
 
 # 5) Commit (handle empty commit gracefully)
+$date = Get-Date -Format "yyyy-MM-dd HH:mm"
+$msg = "Archive ${date}: Auto-binding, Tag Monitoring, Play History complete"
+
 try {
-  Exec "git commit -m `"chore: initial commit or sync`""
+  Exec "git commit -m `"$msg`""
 } catch {
   Write-Host "No changes to commit, proceeding..." -ForegroundColor DarkYellow
 }

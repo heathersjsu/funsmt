@@ -6,7 +6,7 @@
 
 void handleHeartbeatLoop() {
   static unsigned long lastHeartbeat = 0;
-  if (millis() - lastHeartbeat > 20000) {
+  if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
     lastHeartbeat = millis();
     if (provisioned && WiFi.status() == WL_CONNECTED) {
       WiFiClientSecure client;

@@ -22,42 +22,49 @@ export default function ToyHistoryScreen({ route }: Props) {
 
   const loadData = async () => {
     try {
-      const { data: toyRow } = await supabase.from('toys').select('created_at,status,updated_at').eq('id', toyId).maybeSingle();
+      const { data: toyRow } = await supabase.from('toys').select('created_at,status,updated_at,rfid').eq('id', toyId).maybeSingle();
       setCreatedAt((toyRow as any)?.created_at || null);
       setToyStatus((toyRow as any)?.status || null);
       setUpdatedAt((toyRow as any)?.updated_at || null);
-    } catch {}
-    try {
-      const { data } = await supabase
-        .from('play_sessions')
-        .select('scan_time')
-        .eq('toy_id', toyId)
-        .order('scan_time', { ascending: true });
-      const scans = (data || []).map((r: any) => new Date(r.scan_time));
-      const items: Array<{ start: string; end?: string | null; minutes?: number | null }> = [];
-      for (let i = 0; i < scans.length; i += 2) {
-        const outTime = scans[i];
-        const inTime = scans[i + 1];
-        if (!outTime) continue;
-        const minutes = Math.round(((inTime ? inTime.getTime() : Date.now()) - outTime.getTime()) / 60000);
-        items.push({ start: outTime.toISOString(), end: inTime ? inTime.toISOString() : null, minutes });
-      }
-      setSessions(items);
-      const now = new Date();
-      const playsThisMonth = items.filter((s) => {
-        const d = new Date(s.start);
-        return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-      }).length;
-      const hoursThisMonth = items
-        .filter((s) => {
+
+      if ((toyRow as any)?.rfid) {
+        const { data } = await supabase
+          .from('play_sessions')
+          .select('start_time, end_time, duration')
+          .eq('rfid', (toyRow as any).rfid)
+          .order('start_time', { ascending: true });
+
+        const items: Array<{ start: string; end?: string | null; minutes?: number | null }> = (data || []).map((r: any) => {
+          // Handle start_time/end_time as Unix timestamp (number) or ISO string
+          const start = typeof r.start_time === 'number' ? new Date(r.start_time * 1000).toISOString() : r.start_time;
+          const end = r.end_time ? (typeof r.end_time === 'number' ? new Date(r.end_time * 1000).toISOString() : r.end_time) : null;
+          const minutes = r.duration ? Math.round(r.duration / 60) : 
+                          (start && end ? Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000) : 0);
+          return { start, end, minutes };
+        });
+
+        setSessions(items);
+
+        const now = new Date();
+        const playsThisMonth = items.filter((s) => {
           const d = new Date(s.start);
           return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
-        })
-        .reduce((sum, s) => sum + Math.max(0, s.minutes || 0) / 60, 0);
-      setMonthStats({ plays: playsThisMonth, hours: parseFloat(hoursThisMonth.toFixed(1)) });
-      const totalH = items.reduce((sum, s) => sum + Math.max(0, s.minutes || 0) / 60, 0);
-      setTotalHours(parseFloat(totalH.toFixed(1)));
-    } catch {}
+        }).length;
+        const hoursThisMonth = items
+          .filter((s) => {
+            const d = new Date(s.start);
+            return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+          })
+          .reduce((sum, s) => sum + Math.max(0, s.minutes || 0) / 60, 0);
+        setMonthStats({ plays: playsThisMonth, hours: parseFloat(hoursThisMonth.toFixed(1)) });
+        const totalH = items.reduce((sum, s) => sum + Math.max(0, s.minutes || 0) / 60, 0);
+        setTotalHours(parseFloat(totalH.toFixed(1)));
+      } else {
+        setSessions([]);
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   useEffect(() => { loadData(); }, [toyId]);

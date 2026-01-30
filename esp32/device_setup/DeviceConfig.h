@@ -132,4 +132,13 @@ void setupDeviceConfig() {
   Serial.println(String("[wifi] AP start name=") + apName + String(" ok=") + String(apOk ? "true" : "false"));
 }
 
+// RFID Status Logic Configuration
+#define HEARTBEAT_INTERVAL_MS 60000  // 1 minute
+#define RFID_SCAN_INTERVAL_MS 60000  // 1 minute
+#define RFID_RSSI_THRESHOLD -65
+#define RFID_STABLE_CYCLES 3
+#define RFID_MISSED_CYCLES 2
+#define RFID_OUT_CYCLES 3
+#define RFID_DISPLACEMENT_RSSI_DIFF 10
+
 #endif
