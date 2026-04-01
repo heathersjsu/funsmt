@@ -1,0 +1,580 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Preferences.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <BLE2902.h>
+#include "mbedtls/base64.h"
+
+// ========== UUID 定义 ==========
+#define SERVICE_UUID            "0000fff0-0000-1000-8000-00805f9b34fb"
+#define CHARACTERISTIC_UUID_RX  "0000fff1-0000-1000-8000-00805f9b34fb" // 手机 → ESP32
+#define CHARACTERISTIC_UUID_TX  "0000fff2-0000-1000-8000-00805f9b34fb" // ESP32 → 手机
+#define CHARACTERISTIC_UUID_ID  "0000fff3-0000-1000-8000-00805f9b34fb" // 设备ID（只读）
+
+BLECharacteristic *pTxCharacteristic = nullptr;
+BLECharacteristic *pIdCharacteristic = nullptr;
+bool deviceConnected = false;
+volatile bool wifiEventsInitialized = false;
+unsigned long lastHeartbeatMs = 0;
+unsigned long lastWifiRetryMs = 0; // 周期性 Wi-Fi 重试计时器（未连接时每 30 秒尝试）
+String gSavedSsid = "";          // 内存中的已保存 SSID
+String gSavedPwd = "";           // 内存中的已保存密码
+Preferences prefs;
+
+// ===== Supabase REST (replace with your project-specific values) =====
+// IMPORTANT: Do NOT hardcode anon keys in production firmware. Use device-scoped JWT with RLS.
+const char* SUPABASE_REST_URL = "https://kjitkkeerytijbcgkqjj.supabase.co/rest/v1/devices?device_id=eq."; // append DEVICE_ID
+
+String getStoredJwt() {
+  // Load JWT issued during provisioning via BLE
+  return prefs.getString("jwt", "");
+}
+
+String getDeviceId() {
+  // Format: ESP32_XXXXXX where XXXXXX is last 6 of macToShortId()
+  String shortId = macToShortId();
+  String suffix = shortId.substring(max(0, (int)shortId.length() - 6));
+  suffix.toUpperCase();
+  return String("ESP32_") + suffix;
+}
+
+void postHeartbeat() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  String deviceId = getDeviceId();
+  String url = String(SUPABASE_REST_URL) + deviceId;
+  HTTPClient http;
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  String jwt = getStoredJwt();
+  if (jwt.length() == 0) {
+    Serial.println("⚠️ No JWT stored; skip heartbeat");
+    http.end();
+    return;
+  }
+  // Send Authorization header only; your PostgREST setup should accept device JWT with RLS
+  http.addHeader("Authorization", String("Bearer ") + jwt);
+
+  // Build payload (server can treat updated_at/last_seen with now() via trigger, but we send explicit values)
+  String payload = "{";
+  payload += "\"status\":\"online\",";
+  payload += String("\"wifi_signal\":") + String(WiFi.RSSI()) + String(",");
+  payload += String("\"wifi_ssid\":\"") + String(WiFi.SSID().c_str()) + String("\"");
+  payload += "}";
+
+  int code = http.PATCH(payload);
+  if (code > 0) {
+    Serial.printf("💓 Heartbeat PATCH code=%d\n", code);
+  } else {
+    Serial.printf("❌ Heartbeat failed, code=%d\n", code);
+  }
+  http.end();
+}
+
+// ========== 工具函数 ==========
+String macToShortId() {
+  uint64_t mac = ESP.getEfuseMac();
+  uint32_t low = (uint32_t)(mac & 0xFFFFFFFF);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%08X", low);
+  return String(buf);
+}
+
+bool looksBase64(const String& s) {
+  // 简单判断：长度为4的倍数，且只包含 Base64 字符集
+  if (s.length() == 0 || (s.length() % 4) != 0) return false;
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+String base64DecodeToString(const String& b64) {
+  size_t outLen = 0;
+  // 估算输出长度：Base64 约 3/4
+  size_t allocLen = (b64.length() / 4) * 3 + 4;
+  std::unique_ptr<unsigned char[]> out(new unsigned char[allocLen]);
+
+  int ret = mbedtls_base64_decode(out.get(), allocLen, &outLen,
+                                  (const unsigned char*)b64.c_str(), b64.length());
+  if (ret == 0) {
+    return String((const char*)out.get(), outLen);
+  } else {
+    return String("");
+  }
+}
+
+String toHex(const String& s) {
+  String hex = "";
+  for (size_t i = 0; i < s.length(); ++i) {
+    char buf[4];
+    sprintf(buf, "%02X", (uint8_t)s[i]);
+    hex += buf;
+    if (i + 1 < s.length()) hex += " ";
+  }
+  return hex;
+}
+
+void txNotify(const String& msg) {
+  if (!pTxCharacteristic) return;
+  pTxCharacteristic->setValue(msg.c_str());
+  pTxCharacteristic->notify();
+}
+
+// 推送前5个扫描到的 Wi-Fi SSID 及 RSSI/加密类型
+void notifyWifiListTop5() {
+  txNotify("WIFI_LIST_BEGIN");
+  Serial.println("🔎 WIFI_LIST: scanning...");
+
+  int n = WiFi.scanNetworks();
+  if (n <= 0) {
+    Serial.println("⚠️ No networks found");
+    txNotify("WIFI_LIST_NONE");
+    txNotify("WIFI_LIST_END");
+    return;
+  }
+
+  // 选择 RSSI 最强的前5个（不做复杂去重，若有同名SSID可能重复）
+  const int MAX_ITEMS = 5;
+  bool selected[50];
+  int maxCheck = min(50, n);
+  for (int i = 0; i < maxCheck; ++i) selected[i] = false;
+
+  int emitted = 0;
+  while (emitted < MAX_ITEMS) {
+    int bestIdx = -1;
+    int bestRssi = -9999;
+    for (int i = 0; i < maxCheck; ++i) {
+      if (selected[i]) continue;
+      int rssi = WiFi.RSSI(i);
+      if (rssi > bestRssi) { bestRssi = rssi; bestIdx = i; }
+    }
+    if (bestIdx == -1) break; // 没有更多
+    selected[bestIdx] = true;
+
+    String ssid = WiFi.SSID(bestIdx);
+    int rssi = WiFi.RSSI(bestIdx);
+    wifi_auth_mode_t enc = (wifi_auth_mode_t)WiFi.encryptionType(bestIdx);
+    String encStr = encTypeToStr(enc);
+
+    // 格式：WIFI_ITEM <SSID>|<RSSI>|<ENC>
+    String line = String("WIFI_ITEM ") + ssid + "|" + String(rssi) + "|" + encStr;
+    txNotify(line);
+    Serial.println(line);
+    emitted++;
+  }
+
+  txNotify(String("WIFI_LIST_COUNT ") + String(n));
+  txNotify("WIFI_LIST_END");
+}
+
+// ========== Wi-Fi 事件处理 ==========
+String encTypeToStr(wifi_auth_mode_t auth) {
+  switch (auth) {
+    case WIFI_AUTH_OPEN: return "OPEN";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA_PSK";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2_PSK";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2_PSK";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2_ENT";
+    case WIFI_AUTH_WPA3_PSK: return "WPA3_PSK";
+    case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3_PSK";
+    default: return "UNKNOWN";
+  }
+}
+
+void setupWifiEvents() {
+  if (wifiEventsInitialized) return;
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+    switch (event) {
+      case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+        Serial.println("📡 WiFi STA connected to AP");
+        txNotify("WIFI_STA_CONNECTED");
+        break;
+      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        Serial.printf("🌐 Got IP: %s\n", WiFi.localIP().toString().c_str());
+        txNotify("WIFI_OK");
+        break;
+      case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+        int r = info.wifi_sta_disconnected.reason;
+        Serial.printf("⚠️ WiFi STA disconnected, reason=%d\n", r);
+        // Map some common reasons
+        if (r == WIFI_REASON_AUTH_EXPIRE || r == WIFI_REASON_AUTH_LEAVE || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT || r == WIFI_REASON_HANDSHAKE_TIMEOUT) {
+          txNotify("WIFI_AUTH_FAIL");
+        } else if (r == WIFI_REASON_NO_AP_FOUND) {
+          txNotify("WIFI_AP_NOT_FOUND");
+        } else {
+          String msg = String("WIFI_DISCONNECTED_REASON_") + String(r);
+          txNotify(msg);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  });
+  wifiEventsInitialized = true;
+}
+
+// ========== BLE 连接状态回调 ==========
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer) override {
+    deviceConnected = true;
+    Serial.println("✅ Device connected!");
+    // 可选：连接后 500ms 发送 HELLO
+    delay(500);
+    txNotify("HELLO");
+  }
+
+  void onDisconnect(BLEServer *pServer) override {
+    deviceConnected = false;
+    Serial.println("❌ Device disconnected, restarting advertising...");
+    BLEDevice::startAdvertising();
+  }
+};
+
+// ========== Wi-Fi 自动连接函数 ==========
+void connectToWiFi(const char* ssid, const char* password) {
+  Serial.printf("📶 Connecting to Wi-Fi: %s\n", ssid);
+  txNotify("WIFI_CONNECTING");
+  setupWifiEvents();
+  WiFi.disconnect(true, true);
+  delay(200);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);
+
+  // 先扫描确认 AP 存在，并打印信息
+  Serial.println("🔎 Scanning networks...");
+  int n = WiFi.scanNetworks();
+  bool found = false;
+  int foundIndex = -1;
+  for (int i = 0; i < n; ++i) {
+    String ss = WiFi.SSID(i);
+    if (ss == ssid) {
+      found = true;
+      foundIndex = i;
+      int rssi = WiFi.RSSI(i);
+      wifi_auth_mode_t enc = (wifi_auth_mode_t)WiFi.encryptionType(i);
+      Serial.printf("✅ Found SSID '%s', RSSI=%d, enc=%s\n", ss.c_str(), rssi, encTypeToStr(enc).c_str());
+      break;
+    }
+  }
+  if (!found) {
+    Serial.println("❌ AP not found by scan");
+    txNotify("WIFI_AP_NOT_FOUND");
+    return;
+  }
+
+  WiFi.begin(ssid, password);
+
+  unsigned long startAttemptTime = millis();
+  const unsigned long timeout = 25000; // 25 秒超时
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < timeout) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n✅ Wi-Fi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    txNotify("WIFI_OK");
+    // Immediately send a heartbeat after successful connection
+    lastHeartbeatMs = 0; // force immediate
+    postHeartbeat();
+  } else {
+    Serial.println("\n❌ Wi-Fi Connect Failed!");
+    // 尝试根据状态给出更明确的通知
+    if (WiFi.status() == WL_CONNECT_FAILED) {
+      txNotify("WIFI_AUTH_FAIL");
+    } else {
+      txNotify("WIFI_FAIL");
+    }
+  }
+}
+
+// ========== BLE 写入回调 ==========
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) override {
+    // Handle both Arduino String and std::string return types across BLE libs
+    // Use auto and c_str() which is available on both String and std::string
+    String rxValue;
+    {
+      auto val = pCharacteristic->getValue();
+      rxValue = String(val.c_str());
+    }
+
+    // 详细日志
+    String ts = String(millis());
+    Serial.println("====== onWrite ======");
+    Serial.printf("⏱️ millis: %s\n", ts.c_str());
+    Serial.printf("UUID: %s\n", pCharacteristic->getUUID().toString().c_str());
+    Serial.printf("Len: %d\n", rxValue.length());
+    Serial.printf("Raw: %s\n", rxValue.c_str());
+    Serial.printf("Hex: %s\n", toHex(rxValue).c_str());
+
+    if (rxValue.length() == 0) {
+      Serial.println("❌ Received empty data!");
+      txNotify("EMPTY_DATA");
+      return;
+    }
+
+    // 立即确认已收到
+    txNotify("DATA_RECEIVED");
+
+    // PING 检测（字符串或 Base64）
+    if (rxValue == "PING") {
+      Serial.println("✅ Received PING (string)");
+      txNotify("ACK_PING");
+      return;
+    }
+    if (rxValue == "UElORw==") {
+      // Base64 for "PING"
+      Serial.println("✅ Received PING (Base64)");
+      txNotify("ACK_PING");
+      return;
+    }
+
+    // WIFI_LIST 扫描请求（明文）
+    if (rxValue == "WIFI_LIST") {
+      notifyWifiListTop5();
+      return;
+    }
+
+    // If it looks like Base64, attempt to decode and treat decoded payload
+    if (looksBase64(rxValue)) {
+      String decoded = base64DecodeToString(rxValue);
+      Serial.printf("📥 Decoded (len=%d): %s\n", decoded.length(), decoded.c_str());
+      // If decoded is exactly PING
+      if (decoded == "PING") {
+        Serial.println("✅ Decoded PING");
+        txNotify("ACK_PING");
+        return;
+      }
+      // If decoded is exactly WIFI_LIST
+      if (decoded == "WIFI_LIST") {
+        notifyWifiListTop5();
+        return;
+      }
+      // Try JSON WiFi config from decoded
+      if (decoded.startsWith("{") && decoded.endsWith("}")) {
+        DynamicJsonDocument doc(2048);
+        DeserializationError err = deserializeJson(doc, decoded);
+        if (err) {
+          Serial.printf("❌ JSON parse error (b64): %s\n", err.c_str());
+          txNotify("JSON_PARSE_FAIL");
+          return;
+        }
+        const char* ssid = doc["ssid"] | "";
+        const char* password = doc["password"] | "";
+        const char* jwt = doc["jwt"] | "";
+        if (strlen(ssid) == 0 && strlen(jwt) > 0) {
+          // JWT-only provisioning message: store token and ack
+          prefs.putString("jwt", String(jwt));
+          Serial.println("✅ Stored JWT (b64 JSON)");
+          txNotify("JWT_SAVED");
+          return;
+        }
+        if (strlen(ssid) == 0) {
+          Serial.println("❌ Missing ssid in JSON (b64)");
+          txNotify("JSON_MISSING_SSID");
+          return;
+        }
+        if (strlen(jwt) > 0) {
+          prefs.putString("jwt", String(jwt));
+          Serial.println("✅ Stored JWT from provisioning payload");
+        }
+        // 持久化 Wi-Fi 凭据，支持断电重启后自动连接
+        prefs.putString("wifi_ssid", String(ssid));
+        prefs.putString("wifi_pwd", String(password));
+        Serial.printf("💾 Saved Wi-Fi creds: SSID='%s' (pwd length=%d)\n", ssid, (int)String(password).length());
+        // 更新内存中的凭据用于周期性重试
+        gSavedSsid = String(ssid);
+        gSavedPwd = String(password);
+        connectToWiFi(ssid, password);
+        return;
+      }
+      // Unknown decoded content
+      txNotify("UNKNOWN_DECODED");
+      return;
+    }
+
+    // Plain JSON WiFi config
+    if (rxValue.startsWith("{") && rxValue.endsWith("}")) {
+      DynamicJsonDocument doc(2048);
+      DeserializationError err = deserializeJson(doc, rxValue);
+      if (err) {
+        Serial.printf("❌ JSON parse error: %s\n", err.c_str());
+        txNotify("JSON_PARSE_FAIL");
+        return;
+      }
+      const char* ssid = doc["ssid"] | "";
+      const char* password = doc["password"] | "";
+      const char* jwt = doc["jwt"] | "";
+      if (strlen(ssid) == 0 && strlen(jwt) > 0) {
+        // JWT-only message: store and ack
+        prefs.putString("jwt", String(jwt));
+        Serial.println("✅ Stored JWT (plain JSON)");
+        txNotify("JWT_SAVED");
+        return;
+      }
+      if (strlen(ssid) == 0) {
+        Serial.println("❌ Missing ssid in JSON");
+        txNotify("JSON_MISSING_SSID");
+        return;
+      }
+      if (strlen(jwt) > 0) {
+        prefs.putString("jwt", String(jwt));
+        Serial.println("✅ Stored JWT from JSON payload");
+      }
+      // 持久化 Wi-Fi 凭据，支持断电重启后自动连接
+      prefs.putString("wifi_ssid", String(ssid));
+      prefs.putString("wifi_pwd", String(password));
+      Serial.printf("💾 Saved Wi-Fi creds: SSID='%s' (pwd length=%d)\n", ssid, (int)String(password).length());
+      // 更新内存中的凭据用于周期性重试
+      gSavedSsid = String(ssid);
+      gSavedPwd = String(password);
+      connectToWiFi(ssid, password);
+      return;
+    }
+
+    // Optional plaintext command: WIFI_SET SSID=<ssid> PWD=<pwd>
+    if (rxValue.startsWith("WIFI_SET")) {
+      String ssid = "";
+      String pwd = "";
+      // very simple parsing; format: WIFI_SET SSID=xxx PWD=yyy
+      int sPos = rxValue.indexOf("SSID=");
+      int pPos = rxValue.indexOf("PWD=");
+      if (sPos != -1) {
+        int sEnd = rxValue.indexOf(' ', sPos);
+        ssid = (sEnd == -1) ? rxValue.substring(sPos + 5) : rxValue.substring(sPos + 5, sEnd);
+      }
+      if (pPos != -1) {
+        int pEnd = rxValue.indexOf(' ', pPos);
+        pwd = (pEnd == -1) ? rxValue.substring(pPos + 4) : rxValue.substring(pPos + 4, pEnd);
+      }
+      if (ssid.length() == 0) {
+        Serial.println("❌ WIFI_SET missing SSID");
+        txNotify("WIFI_SET_MISSING_SSID");
+        return;
+      }
+      // 保存凭据以便断电重启自动连接
+      prefs.putString("wifi_ssid", ssid);
+      prefs.putString("wifi_pwd", pwd);
+      Serial.printf("💾 Saved Wi-Fi creds via WIFI_SET: SSID='%s' (pwd length=%d)\n", ssid.c_str(), (int)pwd.length());
+      // 更新内存中的凭据用于周期性重试
+      gSavedSsid = ssid;
+      gSavedPwd = pwd;
+      connectToWiFi(ssid.c_str(), pwd.c_str());
+      return;
+    }
+
+    // 清除已保存的 Wi-Fi 凭据（不清除 JWT）
+    if (rxValue == "WIFI_CLEAR") {
+      bool hadSsid = prefs.isKey("wifi_ssid");
+      bool hadPwd = prefs.isKey("wifi_pwd");
+      prefs.remove("wifi_ssid");
+      prefs.remove("wifi_pwd");
+      Serial.printf("🧹 Cleared saved Wi-Fi creds (had ssid=%s, pwd=%s)\n", hadSsid ? "yes" : "no", hadPwd ? "yes" : "no");
+      txNotify("WIFI_CLEARED");
+      gSavedSsid = "";
+      gSavedPwd = "";
+      return;
+    }
+
+    // Fallback
+    Serial.println("ℹ️ Unknown command");
+    txNotify("UNKNOWN_CMD");
+  }
+};
+
+// ========== BLE 初始化 ==========
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println("\nBooting BLE_SPP_PinmeID...");
+  // Init NVS preferences for storing device JWT
+  prefs.begin("pinme", false);
+
+  BLEDevice::init("pinme-ESP32");
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // TX characteristic (ESP32 -> Phone)
+  pTxCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID_TX,
+      BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ);
+  pTxCharacteristic->addDescriptor(new BLE2902());
+
+  // RX characteristic (Phone -> ESP32)
+  BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID_RX,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  pRxCharacteristic->setCallbacks(new MyCallbacks());
+
+  // ID characteristic (read-only)
+  pIdCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID_ID,
+      BLECharacteristic::PROPERTY_READ);
+  String shortId = macToShortId();
+  pIdCharacteristic->setValue(shortId.c_str());
+
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // helps iPhone
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  Serial.println("✅ BLE Advertising started: pinme-ESP32");
+  // 初始状态通知
+  txNotify("WIFI_IDLE");
+  // ======= 开机自动连接（若已保存 Wi-Fi 凭据） =======
+  String savedSsid = prefs.getString("wifi_ssid", "");
+  String savedPwd = prefs.getString("wifi_pwd", "");
+  gSavedSsid = savedSsid;
+  gSavedPwd = savedPwd;
+  if (savedSsid.length() > 0) {
+    Serial.printf("🔄 Auto-connect using saved SSID: %s\n", savedSsid.c_str());
+    // 若保存了 JWT，优先用于心跳授权
+    String jwt = getStoredJwt();
+    if (jwt.length() == 0) {
+      Serial.println("ℹ️ No JWT saved yet; heartbeats will be skipped until one is provisioned.");
+    }
+    connectToWiFi(gSavedSsid.c_str(), gSavedPwd.c_str());
+  } else {
+    Serial.println("ℹ️ No saved Wi-Fi credentials. Waiting for BLE provisioning.");
+  }
+}
+
+void loop() {
+  // Keep the loop light; BLE callbacks and WiFi handle most work
+  delay(200);
+  // ===== 周期性重试：当未连接且存在保存的凭据时，每 30 秒尝试一次连接 =====
+  if (WiFi.status() != WL_CONNECTED) {
+    unsigned long nowMs = millis();
+    if (gSavedSsid.length() > 0 && nowMs - lastWifiRetryMs > 30000UL) {
+      Serial.println("🔁 Periodic Wi-Fi retry (30s)");
+      connectToWiFi(gSavedSsid.c_str(), gSavedPwd.c_str());
+      lastWifiRetryMs = nowMs;
+    }
+  }
+// Periodic heartbeat every 3 minutes
+  if (WiFi.status() == WL_CONNECTED) {
+    unsigned long nowMs = millis();
+  if (nowMs - lastHeartbeatMs > 180000UL) {
+    postHeartbeat();
+    lastHeartbeatMs = nowMs;
+  }
+  }
+}
+这个文件有么有定时上报 保持心跳的功能

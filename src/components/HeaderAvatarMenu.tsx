@@ -39,8 +39,18 @@ export default function HeaderAvatarMenu() {
   };
   const onLogout = async () => {
     closeMenu();
-    await supabase.auth.signOut();
-    navigation.navigate('Login');
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      // 彻底清理 sb-* 键，确保返回登录
+      try {
+        if (typeof window !== 'undefined') {
+          Object.keys(window.localStorage || {}).forEach((k) => { if (k.startsWith('sb-')) window.localStorage.removeItem(k); });
+        }
+      } catch {}
+      // 交由 App 的 onAuthStateChange 切换到登录栈；为确保 Web 立即生效，附加一次轻量刷新
+      try { (globalThis as any).location?.assign('/?login'); } catch {}
+    }
   };
 
   return (

@@ -4,7 +4,7 @@ import { Text, TextInput, Button, HelperText, Menu, useTheme } from 'react-nativ
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../supabaseClient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { uploadToyPhoto, uploadToyPhotoWeb, BUCKET } from '../../utils/storage';
+import { uploadToyPhotoWebBestEffort, uploadBase64PhotoBestEffort, uploadToyPhotoBestEffort, BUCKET } from '../../utils/storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { cartoonGradient } from '../../theme/tokens';
 
@@ -34,6 +34,8 @@ export default function ToyCheckInScreen({ navigation }: Props) {
   const [name, setName] = useState('');
   const [rfid, setRfid] = useState('');
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
+  const [photoContentType, setPhotoContentType] = useState<string>('image/jpeg');
   const [category, setCategory] = useState('');
   const [source, setSource] = useState('');
   const [location, setLocation] = useState('');
@@ -43,6 +45,7 @@ export default function ToyCheckInScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
   const [catMenuOpen, setCatMenuOpen] = useState(false);
   const [nfcReady, setNfcReady] = useState(false);
+  const [status, setStatus] = useState<'in' | 'out'>('in');
   const theme = useTheme();
 
   useEffect(() => {
@@ -59,20 +62,33 @@ export default function ToyCheckInScreen({ navigation }: Props) {
   const pickImage = async () => {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images });
+    // 动态兼容 expo-image-picker 新旧 API
+    const hasNew = !!(ImagePicker as any).MediaType && typeof (ImagePicker as any).MediaType.image !== 'undefined';
+    const mediaTypesParam: any = hasNew ? (ImagePicker as any).MediaType.image : (ImagePicker as any).MediaTypeOptions.Images;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: mediaTypesParam,
+      base64: true,
+      quality: 0.9,
+    });
     if (!result.canceled) {
       const asset = result.assets[0];
       setPhotoUrl(asset.uri);
+      setPhotoBase64(asset.base64 || null);
+      const isPng = (asset.uri || '').toLowerCase().endsWith('.png');
+      setPhotoContentType(isPng ? 'image/png' : 'image/jpeg');
     }
   };
 
   const takePhoto = async () => {
     const { granted } = await ImagePicker.requestCameraPermissionsAsync();
     if (!granted) return;
-    const result = await ImagePicker.launchCameraAsync({});
+    const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.9 });
     if (!result.canceled) {
       const asset = result.assets[0];
       setPhotoUrl(asset.uri);
+      setPhotoBase64(asset.base64 || null);
+      const isPng = (asset.uri || '').toLowerCase().endsWith('.png');
+      setPhotoContentType(isPng ? 'image/png' : 'image/jpeg');
     }
   };
 
@@ -114,18 +130,24 @@ export default function ToyCheckInScreen({ navigation }: Props) {
       source: source || null,
       location: location || null,
       owner: owner || null,
-      status: 'in' as const,
+      status,
       notes: notes || null,
       user_id: uid,
     };
     try {
-      if (photoUrl && photoUrl.startsWith('file:')) {
-        const publicUrl = await uploadToyPhoto(photoUrl, uid);
+      if (photoBase64) {
+        // Best-effort base64 upload (native)
+        const publicUrl = await uploadBase64PhotoBestEffort(photoBase64, uid, photoContentType);
+        payload.photo_url = publicUrl;
+      } else if (photoUrl && photoUrl.startsWith('file:')) {
+        // Best-effort native file upload
+        const publicUrl = await uploadToyPhotoBestEffort(photoUrl, uid);
         payload.photo_url = publicUrl;
       } else if (Platform.OS === 'web' && photoUrl && (photoUrl.startsWith('blob:') || photoUrl.startsWith('data:'))) {
         const resp = await fetch(photoUrl);
         const blob = await resp.blob();
-        const publicUrl = await uploadToyPhotoWeb(blob, uid);
+        // Best-effort web Blob upload
+        const publicUrl = await uploadToyPhotoWebBestEffort(blob, uid);
         payload.photo_url = publicUrl;
       }
       const { error } = await supabase.from('toys').insert(payload);
@@ -137,42 +159,57 @@ export default function ToyCheckInScreen({ navigation }: Props) {
     }
   };
 
+  const isWeb = Platform.OS === 'web';
+  const headerFont = Platform.select({ ios: 'Arial Rounded MT Bold', android: 'sans-serif-medium', default: 'System' });
+
   return (
     <LinearGradient colors={cartoonGradient} style={{ flex: 1 }}>
-      <ScrollView style={[styles.container, { backgroundColor: 'transparent' }]} contentContainerStyle={{ paddingBottom: 24 }}>
-        <Text variant="headlineMedium" style={[styles.title, { color: theme.colors.primary }]}>Toy Check-In</Text>
-        <HelperText type="info">Default status is in (in)</HelperText>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={[
+          { padding: 16, paddingBottom: 40 },
+          isWeb && { width: '100%', maxWidth: 1000, alignSelf: 'center', paddingHorizontal: 16 }
+        ]}
+      >
+        <Text variant="headlineMedium" style={{ marginBottom: 16, color: theme.colors.onSurface, textAlign: 'center', fontWeight: 'bold', fontFamily: headerFont }}>
+          Add New Toy
+        </Text>
+        <HelperText type="info" style={{ fontFamily: headerFont }}>Default status is in (in)</HelperText>
         <View style={styles.formRow}>
           <View style={styles.col}>
-            <TextInput label="Name" value={name} onChangeText={setName} style={styles.input} />
+            <TextInput label="Name" value={name} onChangeText={setName} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <Menu
                 visible={catMenuOpen}
                 onDismiss={() => setCatMenuOpen(false)}
-                anchor={<Button onPress={() => setCatMenuOpen(true)}>{category ? `Category: ${category}` : 'Select Category'}</Button>}
+                anchor={<Button onPress={() => setCatMenuOpen(true)} labelStyle={{ fontFamily: headerFont }}>{category ? `Category: ${category}` : 'Select Category'}</Button>}
               >
                 {CATEGORIES.map((c) => (
-                  <Menu.Item key={c} onPress={() => { setCategory(c); setCatMenuOpen(false); }} title={c} />
+                  <Menu.Item key={c} onPress={() => { setCategory(c); setCatMenuOpen(false); }} title={c} titleStyle={{ fontFamily: headerFont }} />
                 ))}
               </Menu>
             </View>
-            <TextInput label="Source (optional)" value={source} onChangeText={setSource} style={styles.input} />
-            <Button onPress={takePhoto} style={{ marginBottom: 8 }}>Take Photo</Button>
-            <Button onPress={pickImage}>Choose Photo</Button>
+            <TextInput label="Source (optional)" value={source} onChangeText={setSource} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <Button onPress={takePhoto} style={{ marginBottom: 8 }} labelStyle={{ fontFamily: headerFont }}>Take Photo</Button>
+            <Button onPress={pickImage} labelStyle={{ fontFamily: headerFont }}>Choose Photo</Button>
             {(() => { const safeUri = getSafeImageUri(photoUrl || undefined); return safeUri ? (<Image source={{ uri: safeUri }} style={{ width: '100%', height: 200, marginVertical: 8 }} />) : null; })()}
           </View>
           <View style={styles.col}>
-            <TextInput label="RFID tag (optional)" value={rfid} onChangeText={setRfid} style={styles.input} />
-            <Button onPress={readRfidViaNfc} disabled={!nfcReady} style={{ marginBottom: 8 }}>
+            <TextInput label="RFID tag (optional)" value={rfid} onChangeText={setRfid} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <Button onPress={readRfidViaNfc} disabled={!nfcReady} style={{ marginBottom: 8 }} labelStyle={{ fontFamily: headerFont }}>
               {nfcReady ? 'Read RFID via NFC' : 'NFC not available'}
             </Button>
-            <TextInput label="Location (optional)" value={location} onChangeText={setLocation} style={styles.input} />
-            <TextInput label="Owner (optional)" value={owner} onChangeText={setOwner} style={styles.input} />
-            <TextInput label="Notes (optional)" value={notes} onChangeText={setNotes} style={styles.input} multiline />
+            <TextInput label="Location (optional)" value={location} onChangeText={setLocation} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <TextInput label="Owner (optional)" value={owner} onChangeText={setOwner} style={[styles.input, { backgroundColor: '#FFF' }]} contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
+            <TextInput label="Notes (optional)" value={notes} onChangeText={setNotes} style={[styles.input, { backgroundColor: '#FFF' }]} multiline contentStyle={{ fontFamily: headerFont }} mode="outlined" theme={{ roundness: 24 }} outlineColor="#E0E0E0" activeOutlineColor="#FF8C42" />
           </View>
         </View>
-        {error && <Text style={{ color: theme.colors.error }}>{error}</Text>}
-        <Button mode="contained" onPress={submit} loading={loading} style={styles.button}>Check In</Button>
+        {error && <Text style={{ color: theme.colors.error, fontFamily: headerFont }}>{error}</Text>}
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          <Button mode={status === 'in' ? 'contained' : 'outlined'} onPress={() => setStatus('in')} labelStyle={{ fontFamily: headerFont }}>Set In Place</Button>
+          <Button mode={status === 'out' ? 'contained' : 'outlined'} onPress={() => setStatus('out')} labelStyle={{ fontFamily: headerFont }}>Set as Playing</Button>
+        </View>
+        <Button mode="contained" onPress={submit} loading={loading} style={styles.button} labelStyle={{ fontFamily: headerFont }}>Check In</Button>
       </ScrollView>
     </LinearGradient>
   );

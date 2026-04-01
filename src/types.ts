@@ -10,6 +10,7 @@ export interface Toy {
   source: string | null;
   location: string | null;
   owner: string | null;
+  device_id: string | null;
   status: ToyStatus;
   notes: string | null;
   created_at: string;

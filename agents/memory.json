@@ -1,0 +1,69 @@
+{
+  "project_info": {
+    "name": "pinme",
+    "description": "React Native app with Expo, Supabase, and Voice capabilities. Integrated with ESP32 UHF RFID.",
+    "last_updated": "2026-01-20"
+  },
+  "features": {
+    "rfid_scanning_ui": {
+      "status": "active",
+      "key_components": [
+        "src/screens/Toys/ToyFormScreen.tsx"
+      ],
+      "config": {
+        "auto_fill_digits": 6,
+        "ui_style": "Modal/Portal (Unified with WiFi Add)",
+        "scan_logic": "Smart Poll + Dual Database Query (Specific Row + Latest)",
+        "state_management": "Immediate Reset on Scan Start"
+      },
+      "issues_resolved": [
+        "Auto-fill Tag ID input",
+        "Scanning UI flicker (No tags -> List)",
+        "Duplicate scan request error",
+        "RSSI sorting and color coding"
+      ]
+    },
+    "rfid_integration": {
+      "status": "stable",
+      "key_components": [
+        "esp32/device_setup/SupabaseCommands.h", 
+        "esp32/device_setup/RfidCommands.h",
+        "src/screens/Me/EnvironmentCheckScreen.tsx",
+        "supabase/fix_testuart_permissions.sql"
+      ],
+      "config": {
+        "smart_poll_retries": 10,
+        "default_query_params": "0x1104 (S1, Q=4)",
+        "commands": ["RFID_POLL_RETRY_SMART", "RFID_QUERY_SET_RAW", "RFID_FH_SET", "RFID_POLL_SINGLE"],
+        "command_fetch_logic": "id > lastExecutedId (Prevents loops)"
+      },
+      "issues_resolved": [
+        "Error Code 15 (No Tag Found)",
+        "Fixed Channel Interference (Auto Freq Hopping)",
+        "Infinite Loop of Old Commands on Boot",
+        "RLS Permission denied for testuart table",
+        "ESP32 INSERT Fallback errors"
+      ]
+    },
+    "voice_command": {
+      "status": "active",
+      "key_components": ["src/screens/Voice/VoiceCommandScreen.tsx", "App.tsx"],
+      "config": {
+        "listening_timeout": "manual_release",
+        "error_display_duration": 2000,
+        "listening_display_duration": 600000,
+        "permissions": ["RECORD_AUDIO", "NSMicrophoneUsageDescription"]
+      },
+      "issues_resolved": [
+        "False 'No speech detected'",
+        "Permanent error display",
+        "Missing permission prompt on first use"
+      ]
+    },
+    "dev_environment": {
+      "status": "stable",
+      "last_action": "Updated ToyFormScreen UI and Logic"
+    }
+  },
+  "version": "2026.01.20"
+}
